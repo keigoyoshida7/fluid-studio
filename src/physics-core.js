@@ -8,28 +8,35 @@
  * The raised jets recycle existing particles; particle count and mass stay fixed.
  */
 export const FLUID_BOUNDS = Object.freeze({ min: [-1.7, 0, -1.3], max: [1.7, 3.4, 1.3] });
+export const MAX_PARTICLES = 32000;
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const finite = (x, fallback) => Number.isFinite(Number(x)) ? Number(x) : fallback;
 
 export class FluidSimulation {
   constructor({ count = 3600, preset = 'cascade' } = {}) {
-    this.params = { gravity: 9.81, viscosity: 0.12, turbulence: 0.2, speed: 1 };
+    this.params = { gravity: 9.81, viscosity: 0.12, turbulence: 0.2, speed: 1, surfaceTension: 0.3 };
     this.pointer = { active: false, position: [0, 1.5, 0], force: [0, 0, 0] };
     this.reset({ count, preset });
   }
 
   reset({ count = this.count, preset = this.preset } = {}) {
-    this.count = clamp(Math.round(finite(count, 3600)), 512, 9000);
+    this.count = clamp(Math.round(finite(count, 3600)), 512, MAX_PARTICLES);
     this.preset = ['cascade', 'dam', 'orbit', 'rain'].includes(preset) ? preset : 'cascade';
     this.time = 0;
     this.pointer.active = false;
+    this.beats = [];
+    this.audio = { energy: 0, low: 0, mid: 0, high: 0, smoothedEnergy: 0, age: 0 };
     this.emitterDebt = 0;
     this.emitterCursor = 0;
     this.recycleCursor = 0;
     this.seed = 913713;
     const n = this.count;
     this.spacing = 0.105 * Math.cbrt(4000 / n);
+    // Refine source cross sections with the particles, retaining their world size.
+    this.jetSide = Math.max(3, Math.round(0.315 / this.spacing));
+    this.rainColumns = this.jetSide;
+    this.rainRows = Math.max(5, Math.round(0.525 / this.spacing));
     this.renderRadius = this.spacing * 0.88;
     this.wallRadius = this.spacing * 0.45;
     this.h = this.spacing * 2.05;
@@ -131,6 +138,7 @@ export class FluidSimulation {
     this.params.viscosity = clamp(finite(next.viscosity, this.params.viscosity), 0, 1);
     this.params.turbulence = clamp(finite(next.turbulence, this.params.turbulence), 0, 1);
     this.params.speed = clamp(finite(next.speed, this.params.speed), 0.05, 2);
+    this.params.surfaceTension = clamp(finite(next.surfaceTension, this.params.surfaceTension), 0, 1);
   }
 
   setPointer(next = {}) {
@@ -141,6 +149,32 @@ export class FluidSimulation {
     if (Array.isArray(next.force) && next.force.length >= 3) {
       this.pointer.force = next.force.slice(0, 3).map((x) => clamp(finite(x, 0), -25, 25));
     }
+  }
+
+  addBeat({ strength = 1, mode = 'pulse', position } = {}) {
+    const amount = clamp(finite(strength, 1), 0, 1.5);
+    if (amount === 0) return;
+    const style = ['pulse', 'vortex', 'levitate'].includes(mode) ? mode : 'pulse';
+    const center = [0, this.preset === 'orbit' ? 1.7 : 0.32, 0];
+    if (Array.isArray(position) && position.length >= 3) {
+      for (let axis = 0; axis < 3; axis++) {
+        center[axis] = clamp(finite(position[axis], center[axis]), FLUID_BOUNDS.min[axis], FLUID_BOUNDS.max[axis]);
+      }
+    }
+    // Repeated audio callbacks for one transient must not multiply its impulse.
+    const previous = this.beats[this.beats.length - 1];
+    if (previous && previous.age < 0.035 && previous.mode === style &&
+      previous.position.every((value, axis) => Math.abs(value - center[axis]) < 0.2)) {
+      previous.strength = Math.min(1.5, previous.strength + amount * 0.5);
+      return;
+    }
+    if (this.beats.length >= 6) this.beats.shift();
+    this.beats.push({ strength: amount, mode: style, position: center, age: 0 });
+  }
+
+  setAudio(next = {}) {
+    for (const band of ['energy', 'low', 'mid', 'high']) this.audio[band] = clamp(finite(next[band], 0), 0, 1);
+    this.audio.age = 0;
   }
 
   constrain(p) {
@@ -264,17 +298,19 @@ export class FluidSimulation {
         // A compact cross section and closely spaced emission layers form a jet.
         // Birth times span this substep so more than nine arrivals never coincide.
         const birthOffset = dt * (1 - budget / emissionBudget);
-        p[k] = -1.3 + ((e % 3) - 1) * s + 1.9 * birthOffset;
+        const side = this.jetSide, half = (side - 1) * 0.5;
+        p[k] = -1.3 + ((e % side) - half) * s + 1.9 * birthOffset;
         p[k + 1] = 3.10 - 1.65 * birthOffset;
-        p[k + 2] = ((Math.floor(e / 3) % 3) - 1) * s;
+        p[k + 2] = ((Math.floor(e / side) % side) - half) * s;
         v[k] = 1.9; v[k + 1] = -1.65; v[k + 2] = 0.12 * Math.sin(this.time * 1.5);
       } else {
         // Four separated overhead streams, each with a small physical cross section.
         const stream = e % 4;
         const row = Math.floor(e / 4);
-        p[k] = [-1.02, -0.34, 0.34, 1.02][stream] + ((row % 3) - 1) * s;
+        const columns = this.rainColumns, rows = this.rainRows;
+        p[k] = [-1.02, -0.34, 0.34, 1.02][stream] + ((row % columns) - (columns - 1) * 0.5) * s;
         p[k + 1] = 3.13;
-        p[k + 2] = ((Math.floor(row / 3) % 5) - 2) * s;
+        p[k + 2] = ((Math.floor(row / columns) % rows) - (rows - 1) * 0.5) * s;
         v[k] = 0.10 * Math.sin(this.time + stream); v[k + 1] = -2.3; v[k + 2] = 0;
       }
       this.ages[i] = 0;
@@ -286,12 +322,23 @@ export class FluidSimulation {
     const n = this.count, p = this.positions, v = this.velocities, q = this.predicted;
     const { gravity, turbulence } = this.params;
     const pointer = this.pointer;
+    const beats = this.beats;
+    for (const beat of beats) beat.amplitude = beat.strength * Math.exp(-beat.age * 12.5);
+    const audio = this.audio;
+    audio.age += dt;
+    // A missing analyser stream settles back to silence without retaining data.
+    const audioTarget = audio.age < 0.3 ? audio.energy : 0;
+    audio.smoothedEnergy += (audioTarget - audio.smoothedEnergy) * (1 - Math.exp(-dt * 7));
+    const audioSway = audio.smoothedEnergy * 0.55;
     const orbit = this.preset === 'orbit';
     const t = this.time;
+    const audioX = audioSway * Math.cos(t * 0.65) * (0.3 + audio.mid * 0.7);
+    const audioY = audioSway * 0.55 * (0.25 + audio.low * 0.75);
+    const audioZ = audioSway * Math.sin(t * 0.65) * (0.3 + audio.high * 0.7);
     this.recycle(dt);
     for (let i = 0; i < n; i++) {
       const k = i * 3, x = p[k], y = p[k + 1], z = p[k + 2];
-      let ax = 0, ay = -gravity, az = 0;
+      let ax = audioX, ay = -gravity + audioY, az = audioZ;
       if (orbit) {
         // A weak physical central force holds the zero-gravity spinning droplet.
         const dy = y - 1.7;
@@ -313,6 +360,28 @@ export class FluidSimulation {
           ax += (pointer.force[0] * 7 - dx * 4) * falloff;
           ay += (pointer.force[1] * 7 + 3.0 - dy * 4) * falloff;
           az += (pointer.force[2] * 7 - dz * 4) * falloff;
+        }
+      }
+      for (let beatIndex = 0; beatIndex < beats.length; beatIndex++) {
+        const beat = beats[beatIndex];
+        const dx = x - beat.position[0], dy = y - beat.position[1], dz = z - beat.position[2];
+        const radial2 = dx * dx + dz * dz;
+        const radius2 = 1.65 * 1.65;
+        const weight = Math.exp(-radial2 / radius2 - dy * dy / (radius2 * 1.5));
+        const envelope = beat.amplitude * weight;
+        const invRadial = 1 / Math.sqrt(radial2 + 0.035);
+        if (beat.mode === 'vortex') {
+          ax -= dz * invRadial * 34 * envelope;
+          az += dx * invRadial * 34 * envelope;
+          ay += (12 - dy * 4) * envelope;
+        } else if (beat.mode === 'levitate') {
+          ax -= dx * 7 * envelope;
+          az -= dz * 7 * envelope;
+          ay += (55 - dy * 7) * envelope;
+        } else {
+          ax += dx * invRadial * 18 * envelope;
+          az += dz * invRadial * 18 * envelope;
+          ay += (33 - dy * 5) * envelope;
         }
       }
       const drag = Math.max(0, 1 - dt * 0.045);
@@ -344,6 +413,10 @@ export class FluidSimulation {
       if (Math.abs(q[k + 2]) > hz) { v[k + 2] *= 0.1; v[k] *= 0.98; v[k + 1] *= 0.98; }
     }
     p.set(q);
+    for (let index = beats.length - 1; index >= 0; index--) {
+      beats[index].age += dt;
+      if (beats[index].age > 0.48) beats.splice(index, 1);
+    }
     this.time += dt;
   }
 
@@ -354,9 +427,10 @@ export class FluidSimulation {
     const h2 = this.h2;
     // At 60 Hz: a small water baseline, up to a thick syrup at the high end.
     const blend = 1 - Math.exp(-(0.9 + this.params.viscosity * 55) * dt);
+    const cohesion = this.params.surfaceTension * 48 * dt;
     for (let i = 0; i < n; i++) {
       const k = i * 3, start = i * max;
-      let dx = 0, dy = 0, dz = 0, weight = 0;
+      let dx = 0, dy = 0, dz = 0, cx = 0, cy = 0, cz = 0, weight = 0;
       for (let a = 0; a < nc[i]; a++) {
         const q = nb[start + a] * 3;
         const x = p[k] - p[q], y = p[k + 1] - p[q + 1], z = p[k + 2] - p[q + 2];
@@ -365,9 +439,14 @@ export class FluidSimulation {
         const t = 1 - r2 / h2, w = t * t * t;
         weight += w;
         dx += (v[q] - v[k]) * w; dy += (v[q + 1] - v[k + 1]) * w; dz += (v[q + 2] - v[k + 2]) * w;
+        // Pairwise attraction cancels inside the liquid and draws the exposed
+        // surface inward. Equal particle masses make the force momentum neutral.
+        cx -= x * w; cy -= y * w; cz -= z * w;
       }
       const factor = weight > 0 ? blend / weight : 0;
-      delta[k] = dx * factor; delta[k + 1] = dy * factor; delta[k + 2] = dz * factor;
+      delta[k] = dx * factor + cx * cohesion;
+      delta[k + 1] = dy * factor + cy * cohesion;
+      delta[k + 2] = dz * factor + cz * cohesion;
     }
     for (let k = 0; k < v.length; k++) v[k] += delta[k];
   }

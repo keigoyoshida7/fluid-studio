@@ -1,10 +1,24 @@
 {
   "name": "fluid-studio",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "description": "An interactive three-dimensional liquid laboratory in your browser.",
-  "scripts": {"dev":"vite --host 127.0.0.1", "build":"vite build", "preview":"vite preview --host 127.0.0.1", "test":"node scripts/check-physics.mjs"},
-  "dependencies": {"three":"^0.180.0"},
-  "devDependencies": {"vite":"^6.4.1"}
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "npm run test:physics && npm run test:audio && npm run test:motion && npm run test:surface",
+    "test:physics": "node scripts/check-physics.mjs",
+    "test:audio": "node scripts/audio-clock.test.mjs && node scripts/audio-engine.test.mjs",
+    "test:motion": "node scripts/check-motion.mjs",
+    "test:surface": "node scripts/check-surface.mjs",
+    "test:detail": "node scripts/check-high-particles.mjs"
+  },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "vite": "^6.4.1"
+  }
 }

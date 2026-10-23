@@ -20,10 +20,18 @@ self.onmessage = ({ data }) => {
       if (data.params) simulation.setParams(data.params);
       self.postMessage({ type: 'ready', count: simulation.count, bounds: FLUID_BOUNDS, renderRadius: simulation.renderRadius, spacing: simulation.spacing, preset: simulation.preset });
       sendFrame();
+    } else if (data.type === 'clear-effects' && simulation) {
+      simulation.beats.length = 0;
+      simulation.setAudio({energy:0,low:0,mid:0,high:0});
+      simulation.setPointer({active:false});
     } else if (data.type === 'params' && simulation) {
       simulation.setParams(data.params || data);
     } else if (data.type === 'pointer' && simulation) {
       simulation.setPointer(data);
+    } else if (data.type === 'beat' && simulation) {
+      simulation.addBeat(data);
+    } else if (data.type === 'audio' && simulation) {
+      simulation.setAudio(data);
     } else if (data.type === 'step' && simulation && !busy) {
       busy = true;
       const start = performance.now();

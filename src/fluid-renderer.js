@@ -1,76 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-
-// Screen-space fluid: sphere depth -> bilateral surface reconstruction ->
-// Beer–Lambert transmission and a procedural photographic studio reflection.
-// The simulation stays in world space; no image or remote environment is used.
-const QUAD_VERTEX = /* glsl */ `
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    gl_Position = vec4(position.xy, 0.0, 1.0);
-  }
-`;
-
-const PARTICLE_VERTEX = /* glsl */ `
-  uniform float uRadius;
-  uniform float uHeight;
-  varying vec3 vCenter;
-  void main() {
-    vec4 p = modelViewMatrix * vec4(position, 1.0);
-    vCenter = p.xyz;
-    gl_Position = projectionMatrix * p;
-    gl_PointSize = max(1.0, uRadius * uHeight * projectionMatrix[1][1] / -p.z);
-  }
-`;
-
-const DEPTH_FRAGMENT = /* glsl */ `
-  uniform float uRadius;
-  uniform mat4 uProjection;
-  varying vec3 vCenter;
-  void main() {
-    vec2 xy = gl_PointCoord * 2.0 - 1.0;
-    float r2 = dot(xy, xy);
-    if (r2 > 1.0) discard;
-    vec3 p = vCenter + vec3(xy.x, -xy.y, sqrt(1.0 - r2)) * uRadius;
-    vec4 clip = uProjection * vec4(p, 1.0);
-    gl_FragDepth = clip.z / clip.w * 0.5 + 0.5;
-    gl_FragColor = vec4(-p.z, 0.0, 0.0, 1.0);
-  }
-`;
-
-const THICKNESS_FRAGMENT = /* glsl */ `
-  uniform float uRadius;
-  void main() {
-    vec2 p = gl_PointCoord * 2.0 - 1.0;
-    float r2 = dot(p, p);
-    if (r2 > 1.0) discard;
-    gl_FragColor = vec4(sqrt(1.0 - r2) * uRadius * 0.52, 0.0, 0.0, 1.0);
-  }
-`;
-
-const BLUR_FRAGMENT = /* glsl */ `
-  varying vec2 vUv;
-  uniform sampler2D uDepth;
-  uniform vec2 uDirection;
-  uniform float uSmooth;
-  void main() {
-    float center = texture2D(uDepth, vUv).r;
-    if (center < 0.01) { gl_FragColor = vec4(0.0); return; }
-    float total = 0.0;
-    float weight = 0.0;
-    for (int i = -7; i <= 7; i++) {
-      float x = float(i);
-      float z = texture2D(uDepth, vUv + uDirection * x).r;
-      float dz = (z - center) / uSmooth;
-      float w = exp(-x * x / 34.0 - dz * dz);
-      w *= step(0.01, z);
-      total += z * w;
-      weight += w;
-    }
-    gl_FragColor = vec4(total / max(weight, 0.0001), 0.0, 0.0, 1.0);
-  }
-`;
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { VesselFlow } from './vessel-flow.js';
 
 const FLOOR_VERTEX = /* glsl */ `
   varying vec3 vWorld;
@@ -80,201 +11,104 @@ const FLOOR_VERTEX = /* glsl */ `
     gl_Position = projectionMatrix * viewMatrix * p;
   }
 `;
-
 const FLOOR_FRAGMENT = /* glsl */ `
   varying vec3 vWorld;
-  uniform vec3 uTint;
-  uniform float uLight;
-  uniform float uTime;
   uniform sampler2D uShadow;
+  uniform vec3 uTint;
+  uniform float uTime;
+  uniform float uPulse;
   float grid(vec2 p, float spacing) {
     vec2 q = abs(fract(p / spacing - 0.5) - 0.5) * spacing;
-    vec2 width = fwidth(p) * 0.85;
+    vec2 width = max(fwidth(p), vec2(0.0001));
     return 1.0 - min(smoothstep(0.0, width.x, q.x), smoothstep(0.0, width.y, q.y));
   }
   void main() {
     vec2 p = vWorld.xz;
-    float stage = 1.0 - smoothstep(1.5, 2.7, length(p * vec2(0.65, 0.9)));
-    float light = exp(-dot(p - vec2(-1.8, -2.5), p - vec2(-1.8, -2.5)) * 0.025);
-    vec3 col = uTint * (0.52 + 0.6 * light) + vec3(0.012) * stage;
-    float fade = exp(-dot(p, p) * 0.025);
-    col += vec3(0.007, 0.010, 0.011) * grid(p, 0.5) * fade;
-    col += vec3(0.005, 0.007, 0.008) * grid(p, 2.0) * fade;
-    vec2 shadowUV = (vec2(p.x, -p.y) + vec2(2.5)) / 5.0;
+    float stage = exp(-dot(p * vec2(0.72, 0.9), p * vec2(0.72, 0.9)) * 0.12);
+    float pool = exp(-dot(p - vec2(-0.6, -0.5), p - vec2(-0.6, -0.5)) * 0.115);
+    vec3 col = uTint * (0.22 + 0.95 * stage) + vec3(0.024, 0.029, 0.033) * pool;
+    col += vec3(0.006, 0.008, 0.009) * grid(p, 0.5) * exp(-dot(p, p) * 0.05);
+    col += vec3(0.008, 0.010, 0.011) * grid(p, 2.0) * exp(-dot(p, p) * 0.05);
+    vec2 shadowUV = (vec2(p.x, -p.y) + 2.5) / 5.0;
     float shadow = 0.0;
-    for (int x = -2; x <= 2; x++) {
-      for (int y = -2; y <= 2; y++) {
-        shadow += texture2D(uShadow, shadowUV + vec2(float(x), float(y)) * 0.003).r;
-      }
+    for (int x = -2; x <= 2; x++) for (int y = -2; y <= 2; y++) {
+      shadow += texture2D(uShadow, shadowUV + vec2(float(x), float(y)) * 0.0025).r;
     }
-    col *= 1.0 - min(0.65, shadow * 0.08);
-    col *= uLight;
+    float coverage = min(1.0, shadow * 0.025);
+    col *= 1.0 - coverage * 0.38;
+    float a = sin(p.x * 11.0 + sin(p.y * 6.4 + uTime * 0.34));
+    float b = sin(p.y * 12.4 - sin(p.x * 5.8 - uTime * 0.24));
+    float caustic = pow(max(0.0, 1.0 - abs(a + b) * 0.75), 10.0);
+    col += vec3(0.022, 0.036, 0.042) * caustic * coverage * (0.35 + uPulse * 0.45);
     gl_FragColor = vec4(col, 1.0);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
   }
 `;
-
 const SHADOW_VERTEX = /* glsl */ `
   varying float vHeight;
   void main() {
     vHeight = position.y;
-    vec4 p = vec4(position.x, 0.0, position.z, 1.0);
-    gl_Position = projectionMatrix * viewMatrix * p;
-    gl_PointSize = 15.0 + position.y * 3.0;
+    gl_Position = projectionMatrix * viewMatrix * vec4(position.x, 0.0, position.z, 1.0);
+    gl_PointSize = 17.0 + position.y * 2.0;
   }
 `;
 const SHADOW_FRAGMENT = /* glsl */ `
   varying float vHeight;
+  uniform float uParticleWeight;
   void main() {
     vec2 p = gl_PointCoord * 2.0 - 1.0;
     float r = dot(p, p);
     if (r > 1.0) discard;
-    float opacity = exp(-r * 4.0) * 0.12 / (1.0 + vHeight * 0.6);
-    gl_FragColor = vec4(opacity, 0.0, 0.0, 1.0);
-  }
-`;
-
-const COMPOSITE_FRAGMENT = /* glsl */ `
-  varying vec2 vUv;
-  uniform sampler2D uBackground;
-  uniform sampler2D uDepth;
-  uniform sampler2D uThickness;
-  uniform vec2 uTexel;
-  uniform mat4 uInverseProjection;
-  uniform mat4 uCameraWorld;
-  uniform vec3 uCameraPosition;
-  uniform vec3 uAbsorption;
-  uniform vec3 uScatter;
-  uniform vec3 uEnvironmentTint;
-  uniform float uMetalness;
-  uniform float uEnvironment;
-  uniform float uTime;
-
-  vec3 viewPosition(vec2 uv, float depth) {
-    vec4 p = uInverseProjection * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
-    return p.xyz * (-depth / p.z);
-  }
-
-  float softbox(vec3 direction, vec3 facing, float sx, float sy, float blur) {
-    facing = normalize(facing);
-    float front = dot(direction, facing);
-    if (front <= 0.0) return 0.0;
-    vec3 horizontal = normalize(cross(vec3(0.0, 1.0, 0.0), facing));
-    vec3 vertical = cross(facing, horizontal);
-    vec2 p = vec2(dot(direction, horizontal), dot(direction, vertical)) / front;
-    return (1.0 - smoothstep(sx, sx + blur, abs(p.x))) *
-           (1.0 - smoothstep(sy, sy + blur, abs(p.y)));
-  }
-
-  vec3 environment(vec3 r) {
-    float up = smoothstep(-0.4, 0.8, r.y);
-    vec3 col = mix(vec3(0.017, 0.024, 0.027), vec3(0.15, 0.20, 0.22), up);
-    col *= uEnvironmentTint;
-    col += vec3(1.0, 1.04, 1.02) * softbox(r, vec3(-0.5, 1.0, 0.4), 0.75, 0.22, 0.065) * 2.4;
-    col += vec3(0.66, 0.86, 1.0) * softbox(r, vec3(0.9, 0.4, -0.8), 0.13, 0.72, 0.035) * 1.8;
-    col += vec3(1.0, 0.90, 0.76) * softbox(r, vec3(-0.95, 0.15, -0.9), 0.11, 0.65, 0.045) * 1.0;
-    col += vec3(0.43, 0.65, 0.69) * pow(max(0.0, r.y), 4.0) * 0.3;
-    if (uEnvironment > 0.5 && uEnvironment < 1.5) {
-      col *= vec3(1.24, 0.89, 0.68);
-      col += vec3(0.48, 0.14, 0.025) * pow(max(dot(r, normalize(vec3(-1.0, 0.18, 0.6))), 0.0), 16.0);
-    }
-    if (uEnvironment > 1.5) {
-      col *= vec3(0.63, 0.82, 1.2);
-      col += vec3(0.16, 0.32, 0.7) * pow(max(dot(r, normalize(vec3(1.0, 0.2, -0.3))), 0.0), 12.0);
-    }
-    return col;
-  }
-
-  vec3 aces(vec3 c) {
-    return clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), 0.0, 1.0);
-  }
-
-  void main() {
-    vec3 background = texture2D(uBackground, vUv).rgb;
-    float d = texture2D(uDepth, vUv).r;
-    vec3 color = background;
-    if (d > 0.01) {
-      vec2 normalStep = uTexel * 1.8;
-      float dl = texture2D(uDepth, vUv - vec2(normalStep.x, 0.0)).r;
-      float dr = texture2D(uDepth, vUv + vec2(normalStep.x, 0.0)).r;
-      float db = texture2D(uDepth, vUv - vec2(0.0, normalStep.y)).r;
-      float dt = texture2D(uDepth, vUv + vec2(0.0, normalStep.y)).r;
-      vec3 p = viewPosition(vUv, d);
-      vec3 dx1 = viewPosition(vUv + vec2(normalStep.x, 0.0), dr) - p;
-      vec3 dx2 = p - viewPosition(vUv - vec2(normalStep.x, 0.0), dl);
-      vec3 dy1 = viewPosition(vUv + vec2(0.0, normalStep.y), dt) - p;
-      vec3 dy2 = p - viewPosition(vUv - vec2(0.0, normalStep.y), db);
-      vec3 dx = abs(dr - d) < abs(d - dl) ? dx1 : dx2;
-      vec3 dy = abs(dt - d) < abs(d - db) ? dy1 : dy2;
-      vec3 normal = normalize(cross(dx, dy));
-      if (normal.z < 0.0) normal = -normal;
-      vec3 worldNormal = normalize(mat3(uCameraWorld) * normal);
-      vec3 worldPosition = (uCameraWorld * vec4(p, 1.0)).xyz;
-      vec3 viewDirection = normalize(uCameraPosition - worldPosition);
-      float facing = clamp(dot(worldNormal, viewDirection), 0.0, 1.0);
-      float thickness = 0.0;
-      for (int x = -1; x <= 1; x++) {
-        for (int y = -1; y <= 1; y++) {
-          thickness += texture2D(uThickness, vUv + vec2(float(x), float(y)) * uTexel * 2.0).r;
-        }
-      }
-      thickness = clamp(thickness / 9.0, 0.0, 3.5);
-      vec2 refractUV = clamp(vUv + normal.xy * (0.013 + thickness * 0.047) / max(0.6, d * 0.12), vec2(0.002), vec2(0.998));
-      vec3 refracted = texture2D(uBackground, refractUV).rgb;
-      // A softened transmitted environment keeps clear water legible against a dark stage.
-      vec3 refractionDirection = refract(-viewDirection, worldNormal, 1.0 / 1.333);
-      refracted = mix(refracted, environment(refractionDirection), 0.16);
-      vec3 transmission = exp(-uAbsorption * (thickness * 2.3 + 0.06));
-      vec3 body = refracted * transmission + uScatter * (1.0 - transmission) * 0.48;
-      float fresnel = 0.035 + 0.965 * pow(1.0 - facing, 5.0);
-      fresnel = mix(fresnel, 0.86 + 0.14 * pow(1.0 - facing, 5.0), uMetalness);
-      vec3 reflected = environment(reflect(-viewDirection, worldNormal));
-      color = body * (1.0 - fresnel) + reflected * fresnel;
-      // Broad photographic highlight and a small crisp grazing highlight.
-      vec3 lightDirection = normalize(vec3(-0.5, 1.0, 0.4));
-      vec3 halfVector = normalize(lightDirection + viewDirection);
-      float specular = pow(max(dot(worldNormal, halfVector), 0.0), 170.0);
-      color += vec3(0.85, 0.97, 1.0) * specular * 0.30;
-      color *= mix(vec3(1.0), uScatter * 0.28 + 0.75, uMetalness);
-      float coverage = smoothstep(0.001, 0.027, thickness);
-      color = mix(background, color, coverage);
-    }
-    float vignette = 1.0 - smoothstep(0.32, 0.95, length((vUv - 0.5) * vec2(1.0, 0.85))) * 0.2;
-    color *= vignette;
-    color = aces(color * 1.28);
-    color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
-    // Fine static dithering avoids bands on the dark exhibition background.
-    float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
-    gl_FragColor = vec4(color + grain / 255.0, 1.0);
+    gl_FragColor = vec4(exp(-r * 4.0) * 0.09 * uParticleWeight / (1.0 + vHeight * 0.65), 0.0, 0.0, 1.0);
   }
 `;
 
 const MATERIALS = {
-  water: { absorption: [0.78, 0.19, 0.12], scatter: [0.22, 0.74, 0.78], metalness: 0 },
-  aqua: { absorption: [0.78, 0.19, 0.12], scatter: [0.22, 0.74, 0.78], metalness: 0 },
-  amber: { absorption: [0.2, 1.35, 4.8], scatter: [1.0, 0.48, 0.055], metalness: 0 },
-  ink: { absorption: [8.0, 6.0, 4.0], scatter: [0.055, 0.10, 0.15], metalness: 0 },
-  chrome: { absorption: [4.0, 4.0, 4.0], scatter: [0.74, 0.84, 0.9], metalness: 1 },
-  mercury: { absorption: [4.0, 4.0, 4.0], scatter: [0.74, 0.84, 0.9], metalness: 1 },
+  water: { color: 0xffffff, attenuation: 0x8fdce8, distance: 3.8, transmission: 1, metalness: 0, roughness: 0.028 },
+  aqua: { color: 0xffffff, attenuation: 0x77dce2, distance: 2.5, transmission: 1, metalness: 0, roughness: 0.028 },
+  amber: { color: 0xfff5e0, attenuation: 0xd89534, distance: 0.9, transmission: 1, metalness: 0, roughness: 0.035 },
+  ink: { color: 0x809aac, attenuation: 0x294757, distance: 0.21, transmission: 0.91, metalness: 0, roughness: 0.055 },
+  chrome: { color: 0xc3d3df, attenuation: 0xffffff, distance: 1, transmission: 0, metalness: 1, roughness: 0.08 },
+  mercury: { color: 0xc3d3df, attenuation: 0xffffff, distance: 1, transmission: 0, metalness: 1, roughness: 0.08 },
+  polar: { color: 0xb4efff, attenuation: 0x6aacc9, distance: 2.2, transmission: 0.86, metalness: 0.18, roughness: 0.13, iridescence: 0.75, anisotropy: 0.84, sheen: 0.4, mode: 1 },
+  abyss: { color: 0x234441, attenuation: 0x102f29, distance: 0.16, transmission: 0.76, metalness: 0.26, roughness: 0.07, mode: 2 },
+  nacre: { color: 0xe9dbce, attenuation: 0xd9c5b0, distance: 2, transmission: 0.5, metalness: 0.34, roughness: 0.14, iridescence: 1, clearcoat: 0.9, mode: 3 },
+  phase: { color: 0xdcefff, attenuation: 0xb5e8f0, distance: 4.2, transmission: 1, metalness: 0.01, roughness: 0.04, iridescence: 0.24, mode: 4 },
 };
 
 export class FluidRenderer {
   constructor(container, { onInteract } = {}) {
     this.container = container;
     this.onInteract = onInteract;
-    this.radius = 0.075;
+    this.radius = 0.095;
     this.quality = 'balanced';
+    this.flowMode = 'liquid';
+    this.vesselDilation = 0.35;
+    this.vesselFlowSpeed = 0.55;
+    this.vesselPulse = 0;
+    this.vesselEpoch = 0;
+    this.timeScale = 1;
     this.interactionMode = 'stir';
     this.isDragging = false;
     this.particleCount = 0;
     this.capacity = 0;
     this._lastTime = null;
+    this._opticalTime = 0;
     this._disposed = false;
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true });
-    this.renderer.setClearColor(0x080c0e, 1);
-    this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-    this.renderer.toneMapping = THREE.NoToneMapping;
+    this._surfaceBusy = false;
+    this._surfaceDirty = false;
+    this._lastSurfaceSent = -Infinity;
+    this.optics = { smoothness: 0.7, clarity: 0.92, dispersion: 0.12 };
+    this.lightPulse = 0;
+    this.liquidUniforms = { uLiquidTime: { value: 0 }, uLiquidAudio: { value: 0 }, uLiquidMode: { value: 0 } };
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true });
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.14;
+    this.renderer.transmissionResolutionScale = 1;
     this.renderer.domElement.className = 'fluid-canvas';
-    this.renderer.domElement.setAttribute('aria-label', 'Interactive three dimensional fluid simulation. Drag to stir the water.');
+    this.renderer.domElement.setAttribute('aria-label', 'Interactive three dimensional water sculpture. Drag to stir the water.');
     this.renderer.domElement.style.touchAction = 'none';
     container.appendChild(this.renderer.domElement);
     this.camera = new THREE.PerspectiveCamera(41, 1, 0.1, 70);
@@ -284,7 +118,7 @@ export class FluidRenderer {
     this.controls.target.set(0, 1.18, 0);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.07;
-    this.controls.minDistance = 4.8;
+    this.controls.minDistance = 4.2;
     this.controls.maxDistance = 15;
     this.controls.minPolarAngle = 0.22;
     this.controls.maxPolarAngle = 1.48;
@@ -293,69 +127,48 @@ export class FluidRenderer {
     this.controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
     this.controls.touches.ONE = null;
     this.controls.update();
-
-    this.quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.quadGeometry = new THREE.PlaneGeometry(2, 2);
-    this.quadScene = new THREE.Scene();
-    this.quad = new THREE.Mesh(this.quadGeometry, new THREE.MeshBasicMaterial());
-    this.quad.frustumCulled = false;
-    this.quadScene.add(this.quad);
-
+    this.baseScene = new THREE.Scene();
+    this.baseScene.background = new THREE.Color(0x0b1016);
+    this._buildEnvironment();
+    this.keyLight = new THREE.DirectionalLight(0xd7f2ff, 2.1);
+    this.keyLight.position.set(-3, 6, 2);
+    this.fillLight = new THREE.DirectionalLight(0xffe3bf, 1.1);
+    this.fillLight.position.set(4, 3, -4);
+    this.baseScene.add(this.keyLight, this.fillLight);
+    this.shadowTarget = new THREE.WebGLRenderTarget(384, 384, { type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false });
+    this.shadowMaterial = new THREE.ShaderMaterial({ uniforms: { uParticleWeight: { value: 1 } }, vertexShader: SHADOW_VERTEX, fragmentShader: SHADOW_FRAGMENT, blending: THREE.AdditiveBlending, transparent: true, depthTest: false, depthWrite: false });
     this.particleGeometry = new THREE.BufferGeometry();
-    this.particleScene = new THREE.Scene();
-    this.particleUniforms = { uRadius: { value: this.radius }, uHeight: { value: 600 }, uProjection: { value: this.camera.projectionMatrix } };
-    this.depthMaterial = new THREE.ShaderMaterial({ uniforms: this.particleUniforms, vertexShader: PARTICLE_VERTEX, fragmentShader: DEPTH_FRAGMENT, depthTest: true, depthWrite: true });
-    this.thicknessMaterial = new THREE.ShaderMaterial({ uniforms: this.particleUniforms, vertexShader: PARTICLE_VERTEX, fragmentShader: THICKNESS_FRAGMENT, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true });
-    this.particles = new THREE.Points(this.particleGeometry, this.depthMaterial);
-    this.particles.frustumCulled = false;
-    this.particleScene.add(this.particles);
-
-    this.blurMaterial = new THREE.ShaderMaterial({
-      uniforms: { uDepth: { value: null }, uDirection: { value: new THREE.Vector2() }, uSmooth: { value: 0.18 } },
-      vertexShader: QUAD_VERTEX, fragmentShader: BLUR_FRAGMENT, depthTest: false, depthWrite: false,
-    });
-
-    const floatType = this.renderer.extensions.has('EXT_color_buffer_float') ? THREE.HalfFloatType : THREE.UnsignedByteType;
-    this.hasFloatTargets = floatType === THREE.HalfFloatType;
-    if (!this.hasFloatTargets) throw new Error('Floating point render targets are required. Please enable hardware acceleration or use a recent browser.');
-    const surfaceOptions = { type: floatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: true, stencilBuffer: false, generateMipmaps: false };
-    // Linear depth needs 32 bits: half precision visibly quantizes reconstructed
-    // normals once the camera is several metres from a millimetre-sized texel.
-    const depthFilter = this.renderer.extensions.has('OES_texture_float_linear') ? THREE.LinearFilter : THREE.NearestFilter;
-    this.depthTarget = new THREE.WebGLRenderTarget(1, 1, { ...surfaceOptions, type: THREE.FloatType });
-    this.blurA = new THREE.WebGLRenderTarget(1, 1, { ...surfaceOptions, type: THREE.FloatType, minFilter: depthFilter, magFilter: depthFilter, depthBuffer: false });
-    this.blurB = new THREE.WebGLRenderTarget(1, 1, { ...surfaceOptions, type: THREE.FloatType, minFilter: depthFilter, magFilter: depthFilter, depthBuffer: false });
-    this.thicknessTarget = new THREE.WebGLRenderTarget(1, 1, { ...surfaceOptions, depthBuffer: false });
-    this.backgroundTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true });
-    this.shadowTarget = new THREE.WebGLRenderTarget(384, 384, { ...surfaceOptions, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false });
-    this.shadowMaterial = new THREE.ShaderMaterial({ vertexShader: SHADOW_VERTEX, fragmentShader: SHADOW_FRAGMENT, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true });
+    this.shadowParticles = new THREE.Points(this.particleGeometry, this.shadowMaterial);
+    this.shadowParticles.frustumCulled = false;
+    this.shadowScene = new THREE.Scene();
+    this.shadowScene.add(this.shadowParticles);
     this.shadowCamera = new THREE.OrthographicCamera(-2.5, 2.5, 2.5, -2.5, 0.1, 20);
     this.shadowCamera.position.set(0, 10, 0);
     this.shadowCamera.up.set(0, 0, -1);
     this.shadowCamera.lookAt(0, 0, 0);
-
-    this.baseScene = new THREE.Scene();
-    this.baseScene.background = new THREE.Color(0x080d10);
     this.floorMaterial = new THREE.ShaderMaterial({
-      uniforms: { uTint: { value: new THREE.Color(0.014, 0.019, 0.021) }, uLight: { value: 1 }, uTime: { value: 0 }, uShadow: { value: this.shadowTarget.texture } },
+      uniforms: { uTint: { value: new THREE.Color(0.028, 0.036, 0.043) }, uTime: { value: 0 }, uPulse: { value: 0 }, uShadow: { value: this.shadowTarget.texture } },
       vertexShader: FLOOR_VERTEX, fragmentShader: FLOOR_FRAGMENT,
     });
     this.floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), this.floorMaterial);
     this.floor.rotation.x = -Math.PI / 2;
-    this.floor.position.y = -0.048;
+    this.floor.position.y = -0.025;
     this.baseScene.add(this.floor);
     this._buildBoundary();
-
-    this.compositeMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        uBackground: { value: this.backgroundTarget.texture }, uDepth: { value: this.depthTarget.texture }, uThickness: { value: this.thicknessTarget.texture },
-        uTexel: { value: new THREE.Vector2(1 / 800, 1 / 600) }, uInverseProjection: { value: this.camera.projectionMatrixInverse }, uCameraWorld: { value: this.camera.matrixWorld },
-        uCameraPosition: { value: this.camera.position }, uAbsorption: { value: new THREE.Vector3() }, uScatter: { value: new THREE.Vector3() },
-        uMetalness: { value: 0 }, uEnvironment: { value: 0 }, uEnvironmentTint: { value: new THREE.Vector3(1, 1, 1) }, uTime: { value: 0 },
-      },
-      vertexShader: QUAD_VERTEX, fragmentShader: COMPOSITE_FRAGMENT, depthTest: false, depthWrite: false,
+    this.surfaceGeometry = new THREE.BufferGeometry();
+    this.surfaceGeometry.setDrawRange(0, 0);
+    this.surfaceMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff, metalness: 0, roughness: 0.028, transmission: 1,
+      ior: 1.333, thickness: 0.85, attenuationColor: 0x8fdce8,
+      attenuationDistance: 3.8, envMapIntensity: 1.1, dispersion: 0.035,
+      side: THREE.DoubleSide,
     });
+    this._installExperimentalOptics();
+    this.surface = new THREE.Mesh(this.surfaceGeometry, this.surfaceMaterial);
+    this.surface.frustumCulled = false;
+    this.baseScene.add(this.surface);
     this.setMaterial('water');
+    this._startSurfaceWorker();
     this.raycaster = new THREE.Raycaster();
     this.pointer = new THREE.Vector2();
     this.interactionPlane = new THREE.Plane();
@@ -366,36 +179,132 @@ export class FluidRenderer {
     this._resizeObserver.observe(container);
     this.resize();
   }
-
+  _buildEnvironment() {
+    // A local photographic studio needs no remote HDRI or network access.
+    const room = new RoomEnvironment();
+    const generator = new THREE.PMREMGenerator(this.renderer);
+    this.environmentTarget = generator.fromScene(room, 0.025);
+    this.baseScene.environment = this.environmentTarget.texture;
+    this.baseScene.environmentIntensity = 0.8;
+    this.baseScene.environmentRotation.set(0, 0.45, 0);
+    room.dispose(); generator.dispose();
+  }
+  _installExperimentalOptics() {
+    this.surfaceMaterial.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.liquidUniforms);
+      shader.vertexShader = 'varying vec3 vLiquidPosition;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvLiquidPosition = position;');
+      shader.fragmentShader = `
+        varying vec3 vLiquidPosition;
+        uniform float uLiquidTime;
+        uniform float uLiquidAudio;
+        uniform float uLiquidMode;
+      ` + shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace('vec4 diffuseColor = vec4( diffuse, opacity );', `
+        vec4 diffuseColor = vec4(diffuse, opacity);
+        vec3 lp = vLiquidPosition;
+        float lt = uLiquidTime;
+        float liquidFlow = lp.x * 2.4 + lp.y * 2.1 + sin(lp.z * 3.0 + lt * 0.2) - lt * 0.24;
+        float liquidPhase = smoothstep(-0.32, 0.32, sin(liquidFlow));
+      `);
+      shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', `
+        #include <roughnessmap_fragment>
+        if (uLiquidMode > 3.5) roughnessFactor = mix(0.035, 0.095, liquidPhase);
+      `);
+      shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>', `
+        #include <metalnessmap_fragment>
+        if (uLiquidMode > 3.5) metalnessFactor = mix(0.02, 0.99, liquidPhase);
+      `);
+      shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', `
+        #include <emissivemap_fragment>
+        if (uLiquidMode > 1.5 && uLiquidMode < 2.5) {
+          vec3 q = lp * 5.8 + vec3(lt * 0.13, -lt * 0.18, lt * 0.09);
+          float gyroid = sin(q.x) * cos(q.y) + sin(q.y) * cos(q.z) + sin(q.z) * cos(q.x);
+          float vein = 1.0 - smoothstep(0.028, 0.15, abs(gyroid));
+          float branch = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(q.y * 0.8 - lt), 3.0);
+          totalEmissiveRadiance += vec3(0.035, 0.8, 0.53) * vein * branch * (0.16 + uLiquidAudio * 2.1);
+        }
+      `);
+      shader.fragmentShader = shader.fragmentShader.replace('#include <lights_physical_fragment>', `
+        #include <lights_physical_fragment>
+        #ifdef USE_IRIDESCENCE
+          if (uLiquidMode > 0.5 && uLiquidMode < 1.5) {
+            float ribbon = 0.5 + 0.5 * sin(lp.y * 6.5 + sin(lp.x * 3.0 + lt * 0.15) + lt * 0.18);
+            material.iridescenceThickness = 180.0 + ribbon * 280.0;
+            float alignment = dot(normal, normalize(vec3(0.45, 0.8, 0.3)));
+            float polarization = alignment * alignment;
+            material.specularColor *= mix(vec3(0.48, 0.86, 1.0), vec3(1.0, 0.51, 0.9), polarization);
+          }
+          if (uLiquidMode > 2.5 && uLiquidMode < 3.5) {
+            float strata = 0.5 + 0.5 * sin(lp.y * 4.7 + sin(lp.x * 2.7 + lp.z * 2.0) + lt * 0.1);
+            material.iridescenceThickness = 280.0 + strata * 610.0 + uLiquidAudio * 50.0;
+          }
+          if (uLiquidMode > 3.5) material.iridescenceThickness = 250.0 + 300.0 * (1.0 - liquidPhase);
+        #endif
+      `);
+      const transmission = THREE.ShaderChunk.transmission_fragment.replace('material.transmission = transmission;', 'material.transmission = transmission;\nif (uLiquidMode > 3.5) material.transmission *= (1.0 - liquidPhase);');
+      shader.fragmentShader = shader.fragmentShader.replace('#include <transmission_fragment>', transmission);
+    };
+    this.surfaceMaterial.customProgramCacheKey = () => 'liquid-optics-v2';
+  }
   _buildBoundary() {
-    // An open, thin wire stage indicates the simulation domain without enclosing
-    // the water in opaque glass. Short vertical corner ticks keep it unobtrusive.
-    const points = [];
-    const x = 1.77;
-    const z = 1.37;
-    const y = -0.018;
+    const points = [], x = 1.77, z = 1.37, y = -0.01;
     for (const [a, b] of [
       [[-x, y, -z], [x, y, -z]], [[x, y, -z], [x, y, z]],
       [[x, y, z], [-x, y, z]], [[-x, y, z], [-x, y, -z]],
     ]) points.push(...a, ...b);
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-      points.push(sx * x, y, sz * z, sx * x, 0.22, sz * z);
-      points.push(sx * x, 3.30, sz * z, sx * x, 3.43, sz * z);
+      points.push(sx * x, y, sz * z, sx * x, 0.16, sz * z);
+      points.push(sx * x, 3.32, sz * z, sx * x, 3.43, sz * z);
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
-    const material = new THREE.LineBasicMaterial({ color: 0x74979c, transparent: true, opacity: 0.23, depthWrite: false });
-    this.boundary = new THREE.LineSegments(geometry, material);
+    this.boundary = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: 0x859aa5, transparent: true, opacity: 0.2, depthWrite: false }));
     this.baseScene.add(this.boundary);
-    const marker = new THREE.GridHelper(3.5, 1, 0x617b80, 0x617b80);
-    marker.position.y = -0.02;
-    marker.scale.z = 2.74 / 3.5;
-    marker.material.transparent = true;
-    marker.material.opacity = 0.08;
-    this.baseScene.add(marker);
-    this.stageMarker = marker;
   }
-
+  _startSurfaceWorker() {
+    this.surfaceWorker = new Worker(new URL('./surface-worker.js', import.meta.url), { type: 'module' });
+    this.surfaceWorker.onmessage = ({ data }) => {
+      this._surfaceBusy = false;
+      if (this._disposed || data.type !== 'surface') return;
+      this.surfaceDuration = data.duration;
+      this._applySurface(data.positions, data.normals, data.vertices);
+    };
+    this.surfaceWorker.onerror = (error) => {
+      this._surfaceBusy = false;
+      console.error('Water surface reconstruction failed:', error.message);
+    };
+  }
+  _applySurface(positions, normals, vertices) {
+    let position = this.surfaceGeometry.getAttribute('position');
+    let normal = this.surfaceGeometry.getAttribute('normal');
+    let uv = this.surfaceGeometry.getAttribute('uv');
+    if (!position || position.count < vertices) {
+      const capacity = Math.max(vertices, 90000);
+      position = new THREE.BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
+      normal = new THREE.BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
+      uv = new THREE.BufferAttribute(new Float32Array(capacity * 2), 2).setUsage(THREE.DynamicDrawUsage);
+      this.surfaceGeometry.setAttribute('position', position);
+      this.surfaceGeometry.setAttribute('normal', normal);
+      this.surfaceGeometry.setAttribute('uv', uv);
+    }
+    position.array.set(positions); normal.array.set(normals);
+    for (let i = 0; i < vertices; i++) {
+      uv.array[i * 2] = Math.atan2(positions[i * 3 + 2], positions[i * 3]) / (Math.PI * 2) + 0.5;
+      uv.array[i * 2 + 1] = positions[i * 3 + 1] * 0.3;
+    }
+    for (const [attribute, length] of [[position, positions.length], [normal, normals.length], [uv, vertices * 2]]) {
+      attribute.clearUpdateRanges(); attribute.addUpdateRange(0, length); attribute.needsUpdate = true;
+    }
+    this.surfaceGeometry.setDrawRange(0, vertices);
+  }
+  _scheduleSurface(time) {
+    const interval = this.quality === 'fast' ? 45 : this.quality === 'balanced' ? 30 : 25;
+    if (this.flowMode === 'vascular' || this._surfaceBusy || !this._surfaceDirty || !this.particleCount || time - this._lastSurfaceSent < interval) return;
+    const positions = this.positionAttribute.array.slice(0, this.particleCount * 3);
+    this._surfaceBusy = true; this._surfaceDirty = false; this._lastSurfaceSent = time;
+    this.surfaceWorker.postMessage({ type: 'surface', positions, count: this.particleCount, radius: this.radius, quality: this.quality, smoothness: this.optics.smoothness }, [positions.buffer]);
+  }
   _bindEvents() {
     const canvas = this.renderer.domElement;
     this._onDown = (event) => {
@@ -449,46 +358,102 @@ export class FluidRenderer {
     const n = Math.floor(count);
     if (n > this.capacity || !this.particleGeometry.getAttribute('position')) {
       this.capacity = Math.max(n, 8192);
-      this.positionAttribute = new THREE.BufferAttribute(new Float32Array(this.capacity * 3), 3);
-      this.positionAttribute.setUsage(THREE.DynamicDrawUsage);
+      this.positionAttribute = new THREE.BufferAttribute(new Float32Array(this.capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
       this.particleGeometry.setAttribute('position', this.positionAttribute);
     }
     this.positionAttribute.array.set(positions.subarray(0, n * 3));
     this.positionAttribute.needsUpdate = true;
     this.particleGeometry.setDrawRange(0, n);
-    this.particleCount = n;
+    this.particleCount = n; this._surfaceDirty = true;
+    this.shadowMaterial.uniforms.uParticleWeight.value = 3600 / Math.max(1, n);
   }
-
   setParticleRadius(radius) {
-    this.radius = THREE.MathUtils.clamp(radius, 0.025, 0.2);
-    this.particleUniforms.uRadius.value = this.radius;
-    this.blurMaterial.uniforms.uSmooth.value = this.radius * 2.4;
+    const next = THREE.MathUtils.clamp(radius, 0.025, 0.2);
+    if (Math.abs(next - this.radius) > 0.00001) this._surfaceDirty = true;
+    this.radius = next;
   }
-
   setMaterial(name) {
-    const material = MATERIALS[name] || MATERIALS.water;
     this.materialName = name;
-    this.compositeMaterial.uniforms.uAbsorption.value.fromArray(material.absorption);
-    this.compositeMaterial.uniforms.uScatter.value.fromArray(material.scatter);
-    this.compositeMaterial.uniforms.uMetalness.value = material.metalness;
+    const preset = MATERIALS[name] || MATERIALS.water;
+    const material = this.surfaceMaterial;
+    material.color.setHex(preset.color);
+    material.attenuationColor.setHex(preset.attenuation);
+    material.metalness = preset.metalness;
+    material.transmission = preset.transmission;
+    material.roughness = preset.roughness + (1 - this.optics.clarity) * 0.085;
+    material.attenuationDistance = preset.distance * (0.35 + this.optics.clarity * 0.85);
+    material.iridescence = preset.iridescence || 0;
+    material.iridescenceIOR = 1.38;
+    material.iridescenceThicknessRange = [100, 850];
+    material.anisotropy = preset.anisotropy || 0;
+    material.sheen = preset.sheen || 0;
+    material.sheenColor.setHex(0x96bdff);
+    material.sheenRoughness = 0.23;
+    material.clearcoat = preset.clearcoat || 0;
+    material.clearcoatRoughness = 0.07;
+    this.liquidUniforms.uLiquidMode.value = preset.mode || 0;
+    material.needsUpdate = true;
+    this.vesselFlow?.setMaterial(material);
   }
-
+  setFlowMode(mode) {
+    const vascular = mode === 'vascular';
+    const changed = this.flowMode !== (vascular ? 'vascular' : 'liquid');
+    if (vascular && !this.vesselFlow) {
+      this.vesselFlow = new VesselFlow({ material: this.surfaceMaterial });
+      this.vesselFlow.setDilation(this.vesselDilation);
+      this.vesselFlow.setFlow(this.vesselFlowSpeed);
+      this.baseScene.add(this.vesselFlow);
+    }
+    this.flowMode = vascular ? 'vascular' : 'liquid';
+    this.surface.visible = !vascular;
+    this.vesselFlow?.setEnabled(vascular);
+    if (vascular && changed) this.resetVessel();
+    if (!vascular) this._surfaceDirty = true;
+    if (this.isDragging) this._onUp();
+  }
+  setVesselDilation(value) {
+    this.vesselDilation = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.vesselFlow?.setDilation(this.vesselDilation);
+  }
+  setVesselFlow(value) {
+    this.vesselFlowSpeed = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.vesselFlow?.setFlow(this.vesselFlowSpeed);
+  }
+  setVesselPulse(value) {
+    this.vesselPulse = THREE.MathUtils.clamp(Number(value) || 0, 0, 2);
+    this.vesselFlow?.setPulse(this.vesselPulse);
+  }
+  resetVessel() {
+    this.vesselEpoch = this._opticalTime;
+    this.vesselPulse = 0;
+    this.vesselFlow?.reset?.();
+  }
+  setTimeScale(value = 1) {
+    this.timeScale = THREE.MathUtils.clamp(Number(value) || 1, 0.1, 1);
+  }
+  setOptics(next = {}) {
+    for (const key of ['smoothness', 'clarity', 'dispersion']) if (Number.isFinite(Number(next[key]))) this.optics[key] = THREE.MathUtils.clamp(Number(next[key]), 0, 1);
+    this.surfaceMaterial.dispersion = this.optics.dispersion * 0.28;
+    this.surfaceMaterial.thickness = 0.75 + (1 - this.optics.clarity) * 0.85;
+    this.setMaterial(this.materialName || 'water');
+    this._surfaceDirty = true;
+  }
+  setLightPulse(value) { this.lightPulse = THREE.MathUtils.clamp(Number(value) || 0, 0, 2); }
   setQuality(quality) {
     this.quality = ['fast', 'balanced', 'high', 'ultra'].includes(quality) ? quality : 'balanced';
-    this.resize();
+    this._surfaceDirty = true; this.resize();
   }
-
   setEnvironment(name) {
     const value = ({ studio: 0, dusk: 1, sunset: 1, warm: 1, night: 2, midnight: 2, arctic: 2, cool: 2 })[name] ?? 0;
     this.environmentName = name;
-    this.compositeMaterial.uniforms.uEnvironment.value = value;
-    this.floorMaterial.uniforms.uTint.value.setRGB(...(value === 1 ? [0.022, 0.016, 0.012] : value === 2 ? [0.011, 0.016, 0.029] : [0.014, 0.019, 0.021]));
-    this.baseScene.background.setRGB(...(value === 1 ? [0.012, 0.008, 0.007] : value === 2 ? [0.006, 0.009, 0.016] : [0.008, 0.013, 0.016]));
+    this.floorMaterial.uniforms.uTint.value.setRGB(...(value === 1 ? [0.048, 0.031, 0.024] : value === 2 ? [0.021, 0.033, 0.063] : [0.028, 0.036, 0.043]));
+    this.baseScene.background.setHex(value === 1 ? 0x15100d : value === 2 ? 0x080e1a : 0x0b1016);
+    this.baseScene.environmentRotation.y = value === 1 ? 1.75 : value === 2 ? -0.75 : 0.45;
+    this.keyLight.color.setHex(value === 1 ? 0xffe4ba : value === 2 ? 0x9dccff : 0xd7f2ff);
+    this.fillLight.color.setHex(value === 1 ? 0xffa774 : value === 2 ? 0xa1adff : 0xffe3bf);
   }
-
   setAutoRotate(value) { this.controls.autoRotate = Boolean(value); }
   setPaused(value) { this.paused = Boolean(value); }
-
   setInteractionMode(mode) {
     this.interactionMode = mode === 'orbit' ? 'orbit' : 'stir';
     this.controls.mouseButtons.LEFT = this.interactionMode === 'orbit' ? THREE.MOUSE.ROTATE : null;
@@ -496,99 +461,49 @@ export class FluidRenderer {
     this.renderer.domElement.style.cursor = this.interactionMode === 'orbit' ? 'grab' : 'crosshair';
     if (this.isDragging) this._onUp();
   }
-
   resetCamera() {
     this.camera.position.set(5.0, 3.8, 5.8);
-    this.controls.target.set(0, 1.18, 0);
-    this.controls.update();
+    this.controls.target.set(0, 1.18, 0); this.controls.update();
   }
-
   resize() {
     if (this._disposed) return;
-    const width = Math.max(1, this.container.clientWidth);
-    const height = Math.max(1, this.container.clientHeight);
+    const width = Math.max(1, this.container.clientWidth), height = Math.max(1, this.container.clientHeight);
     const dpr = Math.min(window.devicePixelRatio || 1, this.quality === 'ultra' ? 2 : this.quality === 'fast' ? 1 : 1.5);
-    this.renderer.setPixelRatio(dpr);
-    this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
-    const scale = this.quality === 'ultra' ? 0.95 : this.quality === 'high' ? 0.78 : this.quality === 'fast' ? 0.58 : 0.61;
-    const maxDimension = this.quality === 'ultra' ? 1800 : this.quality === 'high' ? 1400 : 1100;
-    const fluidScale = Math.min(dpr * scale, maxDimension / Math.max(width, height));
-    this.fluidWidth = Math.max(2, Math.round(width * fluidScale));
-    this.fluidHeight = Math.max(2, Math.round(height * fluidScale));
-    for (const target of [this.depthTarget, this.blurA, this.blurB, this.thicknessTarget]) target.setSize(this.fluidWidth, this.fluidHeight);
-    this.backgroundTarget.setSize(Math.round(width * dpr), Math.round(height * dpr));
-    this.particleUniforms.uHeight.value = this.fluidHeight;
-    this.compositeMaterial.uniforms.uTexel.value.set(1 / this.fluidWidth, 1 / this.fluidHeight);
+    this.renderer.setPixelRatio(dpr); this.renderer.setSize(width, height, false);
+    this.renderer.transmissionResolutionScale = this.quality === 'fast' ? 0.65 : this.quality === 'balanced' ? 0.85 : 1;
+    this.camera.aspect = width / height; this.camera.updateProjectionMatrix();
   }
-
-  _renderQuad(material, target) {
-    this.quad.material = material;
-    this.renderer.setRenderTarget(target);
-    this.renderer.render(this.quadScene, this.quadCamera);
-  }
-
   render(time = performance.now()) {
     if (this._disposed) return;
     const delta = this._lastTime === null ? 1 / 60 : Math.min((time - this._lastTime) / 1000, 0.1);
-    this._lastTime = time;
-    this.controls.update(delta);
-    this.camera.updateMatrixWorld();
-    this.compositeMaterial.uniforms.uTime.value = time / 1000;
-    this.floorMaterial.uniforms.uTime.value = time / 1000;
+    this._lastTime = time; this.controls.update(delta); this._scheduleSurface(time);
+    if (!this.paused) this._opticalTime += delta * this.timeScale;
+    this.floorMaterial.uniforms.uTime.value = this._opticalTime;
+    this.floorMaterial.uniforms.uPulse.value = this.lightPulse;
+    this.liquidUniforms.uLiquidTime.value = this._opticalTime;
+    this.liquidUniforms.uLiquidAudio.value = this.lightPulse;
+    this.surfaceMaterial.anisotropyRotation = this._opticalTime * 0.075;
+    if (this.flowMode === 'vascular') {
+      this.vesselFlow?.setPulse(this.vesselPulse);
+      this.vesselFlow?.update((this._opticalTime - this.vesselEpoch) * 1000);
+    }
+    this.keyLight.intensity = 2.1 + this.lightPulse * 0.45;
+    this.renderer.toneMappingExposure = 1.14 + this.lightPulse * 0.055;
     this.renderer.setClearColor(0x000000, 0);
-    this.renderer.setRenderTarget(this.shadowTarget);
-    this.renderer.clear();
-    if (this.particleCount) {
-      this.particles.material = this.shadowMaterial;
-      this.renderer.render(this.particleScene, this.shadowCamera);
-    }
-    this.renderer.setRenderTarget(this.backgroundTarget);
-    this.renderer.render(this.baseScene, this.camera);
-    this.renderer.setRenderTarget(this.depthTarget);
-    this.renderer.clear();
-    if (this.particleCount) {
-      this.particles.material = this.depthMaterial;
-      this.renderer.render(this.particleScene, this.camera);
-    }
-    this.renderer.setRenderTarget(this.thicknessTarget);
-    this.renderer.clear();
-    if (this.particleCount) {
-      this.particles.material = this.thicknessMaterial;
-      this.renderer.render(this.particleScene, this.camera);
-    }
-    let input = this.depthTarget;
-    const iterations = this.quality === 'ultra' ? 5 : this.quality === 'high' ? 4 : this.quality === 'fast' ? 2 : 3;
-    for (let i = 0; i < iterations; i++) {
-      this.blurMaterial.uniforms.uDepth.value = input.texture;
-      this.blurMaterial.uniforms.uDirection.value.set(1.5 / this.fluidWidth, 0);
-      this._renderQuad(this.blurMaterial, this.blurA);
-      this.blurMaterial.uniforms.uDepth.value = this.blurA.texture;
-      this.blurMaterial.uniforms.uDirection.value.set(0, 1.5 / this.fluidHeight);
-      this._renderQuad(this.blurMaterial, this.blurB);
-      input = this.blurB;
-    }
-    this.compositeMaterial.uniforms.uDepth.value = input.texture;
-    this._renderQuad(this.compositeMaterial, null);
+    this.renderer.setRenderTarget(this.shadowTarget); this.renderer.clear();
+    if (this.particleCount && this.flowMode !== 'vascular') this.renderer.render(this.shadowScene, this.shadowCamera);
+    this.renderer.setRenderTarget(null); this.renderer.render(this.baseScene, this.camera);
   }
-
-  capture() {
-    this.render();
-    return this.renderer.domElement.toDataURL('image/png');
-  }
-
+  capture() { this.render(); return this.renderer.domElement.toDataURL('image/png'); }
   dispose() {
     if (this._disposed) return;
-    this._disposed = true;
-    this._resizeObserver.disconnect();
-    this.controls.dispose();
+    this._disposed = true; this._resizeObserver.disconnect(); this.surfaceWorker.terminate(); this.controls.dispose();
+    this.vesselFlow?.dispose();
     const canvas = this.renderer.domElement;
     for (const [type, fn] of [['pointerdown', this._onDown], ['pointermove', this._onMove], ['pointerup', this._onUp], ['pointercancel', this._onUp], ['lostpointercapture', this._onUp], ['contextmenu', this._onContextMenu]]) canvas.removeEventListener(type, fn);
-    for (const target of [this.depthTarget, this.blurA, this.blurB, this.thicknessTarget, this.backgroundTarget, this.shadowTarget]) target.dispose();
-    for (const material of [this.depthMaterial, this.thicknessMaterial, this.blurMaterial, this.shadowMaterial, this.floorMaterial, this.compositeMaterial, this.boundary.material, this.stageMarker.material]) material.dispose();
-    for (const geometry of [this.particleGeometry, this.quadGeometry, this.floor.geometry, this.boundary.geometry, this.stageMarker.geometry]) geometry.dispose();
-    this.renderer.dispose();
-    canvas.remove();
+    this.shadowTarget.dispose(); this.environmentTarget.dispose();
+    for (const material of [this.shadowMaterial, this.floorMaterial, this.surfaceMaterial, this.boundary.material]) material.dispose();
+    for (const geometry of [this.particleGeometry, this.surfaceGeometry, this.floor.geometry, this.boundary.geometry]) geometry.dispose();
+    this.renderer.dispose(); canvas.remove();
   }
 }
