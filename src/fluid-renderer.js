@@ -5,7 +5,7 @@ import { VesselFlow } from './vessel-flow.js';
 import { MAX_WAVE_EVENTS } from './physics-core.js';
 
 const MAX_WAVES = MAX_WAVE_EVENTS;
-// One bounded event pool is shared by the water's optics and its projected light.
+// A bounded event pool drives optical ripples on the free water surface.
 // Events capture speed and damping at birth so changing a control never teleports a wave.
 const WAVE_UNIFORMS = /* glsl */ `
   uniform float uWaveTime;
@@ -40,7 +40,6 @@ const FLOOR_VERTEX = /* glsl */ `
   }
 `;
 const FLOOR_FRAGMENT = /* glsl */ `
-  ${WAVE_UNIFORMS}
   varying vec3 vWorld;
   uniform sampler2D uShadow;
   uniform vec3 uTint;
@@ -65,15 +64,7 @@ const FLOOR_FRAGMENT = /* glsl */ `
     }
     float coverage = min(1.0, shadow * 0.025);
     col *= 1.0 - coverage * 0.38;
-    float a = sin(p.x * 11.0 + sin(p.y * 6.4 + uTime * 0.34));
-    float b = sin(p.y * 12.4 - sin(p.x * 5.8 - uTime * 0.24));
-    float caustic = pow(max(0.0, 1.0 - abs(a + b) * 0.75), 10.0);
-    col += vec3(0.022, 0.036, 0.042) * caustic * coverage * (0.35 + uPulse * 0.45);
-    // The narrow travelling caustic reveals propagation without a global flash.
-    float wave = waveField(vec3(p.x, 0.32, p.y));
-    float echo = max(0.0, wave);
-    float boundedStage = 1.0 - smoothstep(3.3, 4.3, length(p));
-    col += vec3(0.09, 0.16, 0.19) * pow(echo, 1.7) * (0.24 + coverage * 0.7) * boundedStage;
+    // A quiet stage: no projected wave rings or animated floor caustics.
     gl_FragColor = vec4(col, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -126,7 +117,9 @@ export class FluidRenderer {
     this.networkTension = 0.45;
     this.networkAfterglow = 0.6;
     this.networkAutonomy = 0.3;
-    this.networkPalette = 'silver';
+    this.networkPalette = 'material';
+    this.capillaryLumen = 0.55;
+    this.tracerDensity = 0.72;
     this.audioBands = { low: 0, mid: 0, high: 0, energy: 0 };
     this.waveParams = { speed: 2.4, strength: 0.72, damping: 0.24 };
     this._waveCursor = 0;
@@ -166,7 +159,7 @@ export class FluidRenderer {
     this.controls.target.set(0, 1.18, 0);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.07;
-    this.controls.minDistance = 4.2;
+    this.controls.minDistance = 1.8;
     this.controls.maxDistance = 15;
     this.controls.minPolarAngle = 0.22;
     this.controls.maxPolarAngle = 1.48;
@@ -473,6 +466,8 @@ export class FluidRenderer {
       this.vesselFlow.setPalette?.(this.networkPalette);
       this.vesselFlow.setWaveParams?.(this.waveParams);
       this.vesselFlow.setBands?.(this.audioBands);
+      this.vesselFlow.setLumen?.(this.capillaryLumen);
+      this.vesselFlow.setTracerDensity?.(this.tracerDensity);
       this.baseScene.add(this.vesselFlow);
     }
     this.flowMode = vascular ? 'vascular' : 'liquid';
@@ -490,6 +485,18 @@ export class FluidRenderer {
   setVesselFlow(value) {
     this.vesselFlowSpeed = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
     this.vesselFlow?.setFlow(this.vesselFlowSpeed);
+  }
+  regenerateCapillaries(seed) {
+    this.vesselFlow?.regenerate?.(seed);
+    this.resetVessel();
+  }
+  setCapillaryLumen(value) {
+    this.capillaryLumen = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.vesselFlow?.setLumen?.(this.capillaryLumen);
+  }
+  setTracerDensity(value) {
+    this.tracerDensity = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.vesselFlow?.setTracerDensity?.(this.tracerDensity);
   }
   setVesselPulse(value) {
     this.vesselPulse = THREE.MathUtils.clamp(Number(value) || 0, 0, 2);

@@ -37,11 +37,12 @@ export function mountPerformance({ fluid, getWorker, getPaused, getPreset=()=> '
       <label class="slider-label" for="light-dispersion"><span>光の分散</span><output id="light-dispersion-output">8%</output></label><input id="light-dispersion" type="range" min="0" max="1" step="0.01" value="0.08" />
     </section>`);
   document.querySelector('#camera-controls').innerHTML = `
+    <button id="detail-focus" class="camera-morph detail-focus" aria-pressed="false"><span class="camera-led"></span><span>流れを拡大</span><b>OFF</b></button>
     <button id="camera-morph" class="camera-morph" aria-pressed="false"><span class="camera-led"></span><span>カメラ位置をモーフィング</span><b>OFF</b></button>
     <div class="camera-style"><label class="select-label" for="camera-style">カメラワーク</label><div class="select-wrap"><select id="camera-style"><option value="drift">Drift / 浮かぶ視線</option><option value="orbit">Orbit / まわり込む</option><option value="macro">Intimate / 水に近づく</option></select><span>⌄</span></div></div>
     <label class="slider-label camera-speed-label" for="camera-speed"><span>移動の速さ</span><output id="camera-speed-output">30%</output></label><input id="camera-speed" type="range" min="0.1" max="1" step="0.01" value="0.3" />`;
 
-  document.querySelector('.view-actions').insertAdjacentHTML('afterbegin','<button id="camera-quick" class="camera-quick" aria-label="カメラの自動移動" aria-pressed="false">CAMERA <span>OFF</span></button>');
+  document.querySelector('.view-actions').insertAdjacentHTML('afterbegin','<button id="detail-quick" class="camera-quick detail-quick" aria-label="流れを拡大" aria-pressed="false">DETAIL <span>OFF</span></button><button id="camera-quick" class="camera-quick" aria-label="カメラの自動移動" aria-pressed="false">CAMERA <span>OFF</span></button>');
 
   const $ = selector => document.querySelector(selector);
   let reaction='pulse', reactivity=.78, pulse=0, audio, disposed=false, lastUpdate=0, lastAudioForce=0, currentStep=-1, sourceRequest=0, timeLens=false, lightEcho=true;
@@ -52,6 +53,13 @@ export function mountPerformance({ fluid, getWorker, getPaused, getPreset=()=> '
   const paintRange=input=>input.style.setProperty('--fill',`${(Number(input.value)-Number(input.min))/(Number(input.max)-Number(input.min))*100}%`);
   const paintSteps=()=>{const pattern=audio?.pattern||PATTERNS.four;document.querySelectorAll('[data-step]').forEach((button,i)=>{button.classList.toggle('active',Boolean(pattern[i]));button.setAttribute('aria-pressed',String(Boolean(pattern[i])));});};
   const setCamera=value=>{cameraEnabled=Boolean(value);camera.setEnabled(cameraEnabled);$('#camera-morph').setAttribute('aria-pressed',String(cameraEnabled));$('#camera-morph b').textContent=cameraEnabled?'ON':'OFF';$('#camera-quick').setAttribute('aria-pressed',String(cameraEnabled));$('#camera-quick span').textContent=cameraEnabled?'ON':'OFF';};
+  const setDetailFocus=value=>{
+    const enabled=Boolean(value);camera.setDetailFocus?.(enabled);
+    for(const id of ['detail-focus','detail-quick']){
+      const el=$(`#${id}`);el.setAttribute('aria-pressed',String(enabled));
+      el.querySelector(id==='detail-focus'?'b':'span').textContent=enabled?'ON':'OFF';
+    }
+  };
   const paintState=snapshot=>{
     latestSnapshot=snapshot;
     const running=snapshot.running;
@@ -113,6 +121,7 @@ export function mountPerformance({ fluid, getWorker, getPaused, getPreset=()=> '
   const opticalControl=[['surface-smoothness','smoothness'],['water-clarity','clarity'],['light-dispersion','dispersion']];
   opticalControl.forEach(([id,key])=>$(`#${id}`).addEventListener('input',event=>{optics[key]=Number(event.target.value);$(`#${id}-output`).textContent=`${Math.round(optics[key]*100)}%`;paintRange(event.target);fluid.setOptics?.(optics);}));
   $('#camera-morph').addEventListener('click',()=>setCamera(!cameraEnabled));$('#camera-quick').addEventListener('click',()=>setCamera(!cameraEnabled));
+  for(const id of ['detail-focus','detail-quick'])$(`#${id}`).addEventListener('click',()=>setDetailFocus(!camera.detailFocus));
   $('#camera-style').addEventListener('change',event=>camera.setStyle(event.target.value));
   $('#camera-speed').addEventListener('input',event=>{const v=Number(event.target.value);camera.setSpeed(v);$('#camera-speed-output').textContent=`${Math.round(v*100)}%`;paintRange(event.target);});
   const manualCamera=event=>{if(cameraEnabled&&(event.button===2||document.querySelector('[data-mode="orbit"]').getAttribute('aria-pressed')==='true'))setCamera(false);};
@@ -125,7 +134,7 @@ export function mountPerformance({ fluid, getWorker, getPaused, getPreset=()=> '
   const removeLanguageListener=onLanguageChange(()=>{paintStepLabels();if(latestSnapshot)paintState({...latestSnapshot,error:undefined});});
 
   return {
-    audio,camera,
+    audio,camera,setDetailFocus,
     pulseVisual(strength=1){pulse=Math.max(0,Math.min(1.5,Number(strength)||0));if(pulse>0)launchWave(pulse);else waveControls.reset();},
     resetWaves(){pulse=0;waveControls.reset();},
     update(now){

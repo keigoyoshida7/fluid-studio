@@ -202,3 +202,8 @@ html[lang=en] .stage-heading h1{font-family:Georgia,serif;letter-spacing:-.025em
 
 .network-heading{margin-top:22px}.network-heading>span{font:7px var(--mono);letter-spacing:1.5px;color:#747474}.network-heading h3{font-size:12px;font-weight:400;letter-spacing:.09em;margin:10px 0 0;color:#c5c5c5}.network-palette-label{margin-top:24px}.vascular-section .slider-label:not(:first-of-type){margin-top:23px}.vessel-detail-note{line-height:2}.network-heading+.vessel-caption{margin-top:12px}
 @media(max-width:700px){.network-heading h3{font-size:15px}.network-heading>span{font-size:8px}.network-palette-label{margin-top:26px}}
+
+.detail-focus{margin-bottom:10px}.detail-quick{margin-right:0}.view-actions{align-items:center}
+@media(max-width:700px){.detail-quick{font-size:6px;gap:4px;padding:6px 5px}.detail-quick span{font-size:6px}}
+
+.regenerate-capillaries{display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px 12px;margin:0 0 19px;border:1px solid #414141;border-radius:3px;color:#aaa;font-size:9px;letter-spacing:.03em}.regenerate-capillaries:hover{border-color:#999;color:#eee}.regenerate-capillaries span{font-size:15px}

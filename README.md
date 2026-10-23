@@ -28,21 +28,27 @@ Water, Chrome, Amber, and Ink are joined by four experimental optics:
 
 Adjust surface smoothness, clarity, and dispersion independently.
 
-## Filament network / Vasodilation
+## Water capillaries / Vasodilation
 
-The initial view is a dense, spatially woven filament network with deliberate voids: 780 connected junctions and up to 12,480 fine threads. The Vasodilation selector keeps its original name while the scene develops into an abstract network study. Free liquid remains available in the same model selector.
+The initial view is an irregular network of curved, branching water capillaries. Each branch has a real circular cross section and a physical water material with reflection, refraction and transmission. Small internal tracers follow connected routes through the lumen, so the current can be observed inside the transparent branches. Local pulse dilation, subtle motion and changing fluid highlights keep the network alive even without a sequence.
 
-Kicks launch localized tension and light packets that travel along the graph and branch at junctions. Their delay follows graph distance, so distant threads respond later. Density, tension, spatial spread, quiet autonomous activity, and Silver / Crimson / Graphite / Follow material palettes can be adjusted. Low frequencies launch the packets; higher frequencies affect microscopic vibration. The GPU draws antialiased ribbons at subpixel widths while the liquid workers are idle. This is an artistic network, not a biological or physiological simulation.
+Branch positions, angles, curvature and diameter hierarchy vary with a random seed. **Regenerate branches** produces a new connected structure. Branch density, lumen size, internal flow detail, flow speed, spatial spread, tension, autonomous activity and color can be adjusted. Flow speed controls internal advection independently of sound propagation speed. Choose **Water** and **Follow material** for clear water optics; all eight material choices remain available.
+
+**DETAIL / Inspect the flow** smoothly moves closer to the capillaries and returns to the saved composition when switched off. The initial network view starts in detail mode. Automatic camera movement can be switched independently. The floor remains quiet: no projected wave rings or animated caustics.
+
+The network and its flow are artistic approximations, not a physiological or clinical simulation. Free liquid remains available in the same model selector.
 
 ## Sound as a traveling wave
 
-The propagation controls choose speed, afterglow, and a left, central, or moving excitation point. In free liquid, the kick applies a finite-speed pressure wave to the actual fluid particles. Refraction and reflection ripples use the same origin, propagation speed, and simulation clock, so the visible front follows the physical response even when the solver slows down. Pulse, Vortex, and Levitate apply different directional forces. In the network, packets travel along connected filaments and the projected floor wave shares the same excitation point.
+The propagation controls choose speed, afterglow, and a left, central, or moving excitation point. In free liquid, the kick applies a finite-speed pressure wave to the actual fluid particles. Refraction and reflection ripples use the same origin, propagation speed, and simulation clock, so the visible front follows the physical response even when the solver slows down. Pulse, Vortex, and Levitate apply different directional forces. Inside the capillary network, localized pulses travel along connected branches and modulate the lumen and internal highlights.
 
-Both paths keep a bounded event pool. Free liquid retains the six newest physical and optical packets together; dense sequences replace older packets. The network retains twelve packets. Resetting or switching the model clears pending packets to avoid stale shocks. No title or logo lettering overlays the 3D view; the interface remains monochrome and bilingual.
+Both paths keep bounded event pools. Free liquid retains the six newest physical and optical packets together; dense sequences replace older packets. Resetting or switching the model clears pending packets to avoid stale shocks. No title or logo lettering overlays the 3D view; the interface remains monochrome and bilingual.
 
 ## Particle and surface detail
 
-Particle count is independent of rendering quality: **1,800 / 3,600 / 6,000 / 12,000 / 20,000 / 32,000**. Finer particles preserve the same water volume. The surface grid has four resolutions, up to **108³** samples, with smooth gradient normals and antialiasing.
+For free liquid, particle count is independent of rendering quality: **1,800 / 3,600 / 6,000 / 12,000 / 20,000 / 32,000**. Finer particles preserve the same water volume. The surface grid has four resolutions, up to **108³** samples, with smooth gradient normals and antialiasing.
+
+The capillary view has a separate internal-flow control, up to 24,000 microtracers.
 
 High particle counts are computationally expensive. The physics worker may advance slower than real time at 20–32k, while the camera and drawing continue independently. Start at 3,600–6,000 particles and use **高精細** or **極細** surface quality before increasing particle count. Small screens start with 1,800 particles.
 
@@ -69,7 +75,7 @@ Use Node.js 20.19+ or 22.12+ and a recent WebGL 2 browser.
 ```sh
 npm ci
 npm run dev
-npm test          # physics, audio lifecycle, motion, surface, causal waves, connected network
+npm test          # physics, audio lifecycle, camera/detail motion, surface, waves, connected networks
 npm run test:detail # optional 12k/32k numerical checks and timings
 npm run build    # static production bundle in docs/
 npm run preview

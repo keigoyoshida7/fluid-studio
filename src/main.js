@@ -156,7 +156,7 @@ try {
   worker.postMessage({type:'init',count:state.count,preset:state.preset});
   worker.postMessage({type:'params',gravity:state.gravity,viscosity:state.viscosity,turbulence:state.turbulence,speed:state.speed});
   performancePanel=mountPerformance({fluid,getWorker:()=>worker,getPaused:()=>state.paused,getPreset:()=>state.preset,onResume:()=>setPaused(false)});
-  vascularPanel=mountVascular({fluid,onMode:mode=>{state.flowMode=mode;lastStepSent=0;worker.postMessage({type:'clear-effects'});performancePanel?.resetWaves?.();setPaused(false);setMode(mode==='vascular'?'orbit':'stir');}});
+  vascularPanel=mountVascular({fluid,onMode:mode=>{state.flowMode=mode;lastStepSent=0;worker.postMessage({type:'clear-effects'});performancePanel?.resetWaves?.();setPaused(false);setMode(mode==='vascular'?'orbit':'stir');performancePanel?.setDetailFocus?.(mode==='vascular');}});
   let lastTime=performance.now();
   function animate(now) {
     requestAnimationFrame(animate);

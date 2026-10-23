@@ -1,6 +1,6 @@
 {
   "name": "fluid-studio",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "description": "An interactive three-dimensional liquid laboratory in your browser.",
@@ -8,14 +8,15 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "npm run test:physics && npm run test:audio && npm run test:motion && npm run test:surface && npm run test:waves && npm run test:network",
+    "test": "npm run test:physics && npm run test:audio && npm run test:motion && npm run test:surface && npm run test:waves && npm run test:network && npm run test:capillaries",
     "test:physics": "node scripts/check-physics.mjs",
     "test:audio": "node scripts/audio-clock.test.mjs && node scripts/audio-engine.test.mjs",
     "test:motion": "node scripts/check-motion.mjs",
     "test:surface": "node scripts/check-surface.mjs",
     "test:detail": "node scripts/check-high-particles.mjs",
     "test:waves": "node scripts/check-waves.mjs",
-    "test:network": "node scripts/check-filament-network.mjs"
+    "test:network": "node scripts/check-capillary-renderer.mjs",
+    "test:capillaries": "node scripts/check-capillaries.mjs"
   },
   "dependencies": {
     "three": "^0.180.0"

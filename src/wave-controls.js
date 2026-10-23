@@ -4,12 +4,12 @@ for(const [ja,en]of[
   ['波動の伝わり方','Wave propagation'],['音の衝撃を、距離と遅れをもつ波に。','A shock becomes a wave with distance and delay.'],
   ['伝播速度','Propagation speed'],['波の余韻','Wave afterglow'],['波の起点','Excitation point'],
   ['左から','From the left'],['中心から','From the center'],['巡回する','Moving sources'],
-  ['低音で波を起こし、中高音で糸の微振動を変える。','Bass launches waves; higher frequencies change the filaments’ microvibrations.'],
+  ['低音で脈を送り、中高音で水の微振動を変える。','Bass launches pulses; higher frequencies change the water’s microvibrations.'],
 ])translations[ja]={ja,en};
 
 export function mountWaveControls({fluid,getWorker,getPreset}){
   document.querySelector('.performance-experiments').insertAdjacentHTML('beforebegin',`
-    <section class="wave-controls" aria-label="波動の伝わり方"><div class="wave-controls-heading"><span class="eyebrow">PROPAGATION / DISTANCE × TIME</span><h3>波動の伝わり方</h3><p>音の衝撃を、距離と遅れをもつ波に。</p></div><div class="wave-knobs"><div class="performance-knob"><label for="wave-speed">伝播速度 <output id="wave-speed-output">38%</output></label><input id="wave-speed" type="range" min="0" max="1" step="0.01" value="0.38" /></div><div class="performance-knob"><label for="wave-afterglow">波の余韻 <output id="wave-afterglow-output">76%</output></label><input id="wave-afterglow" type="range" min="0" max="1" step="0.01" value="0.76" /></div><div class="wave-origin"><label class="select-label" for="wave-origin">波の起点</label><div class="select-wrap"><select id="wave-origin"><option value="left">左から</option><option value="center">中心から</option><option value="moving">巡回する</option></select></div></div></div><p class="wave-band-note">低音で波を起こし、中高音で糸の微振動を変える。</p></section>`);
+    <section class="wave-controls" aria-label="波動の伝わり方"><div class="wave-controls-heading"><span class="eyebrow">PROPAGATION / DISTANCE × TIME</span><h3>波動の伝わり方</h3><p>音の衝撃を、距離と遅れをもつ波に。</p></div><div class="wave-knobs"><div class="performance-knob"><label for="wave-speed">伝播速度 <output id="wave-speed-output">38%</output></label><input id="wave-speed" type="range" min="0" max="1" step="0.01" value="0.38" /></div><div class="performance-knob"><label for="wave-afterglow">波の余韻 <output id="wave-afterglow-output">76%</output></label><input id="wave-afterglow" type="range" min="0" max="1" step="0.01" value="0.76" /></div><div class="wave-origin"><label class="select-label" for="wave-origin">波の起点</label><div class="select-wrap"><select id="wave-origin"><option value="left">左から</option><option value="center">中心から</option><option value="moving">巡回する</option></select></div></div></div><p class="wave-band-note">低音で脈を送り、中高音で水の微振動を変える。</p></section>`);
   const $=s=>document.querySelector(s);
   let speed=.38, afterglow=.76, sourceMode='left', serial=0;
   const apply=()=>{

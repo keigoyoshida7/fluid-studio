@@ -1,6 +1,6 @@
 // Local, explicit bilingual copy. Numeric readouts and user filenames stay intact.
 const entries = [
-  ['ホーム','Home'],
+  ['ホーム','Home'],['流れを拡大','Inspect the flow'],
   ['FLUID ホーム','FLUID home'], ['使い方','Help'], ['3D流体シミュレーション','3D fluid simulation'], ['ドラッグで水をかき混ぜる3Dビュー','3D view: drag to stir the water'],
   ['流体を、','Touch the'], ['触る。','flow.'], ['画像を保存','Save image'], ['全画面表示','Fullscreen'], ['流れを準備しています','Preparing the flow'],
   ['ドラッグでかき混ぜる','Drag to stir'], ['ドラッグで視点を回す','Drag to orbit'], ['スクロールで拡大','Scroll to zoom'], ['3D座標軸','3D coordinate axes'],
