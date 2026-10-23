@@ -13,9 +13,66 @@ export const MAX_PARTICLES = 32000;
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const finite = (x, fallback) => Number.isFinite(Number(x)) ? Number(x) : fallback;
 
+export const WAVE_DEFAULTS = Object.freeze({ waveSpeed: 2.4, waveStrength: 0.72, waveDamping: 0.24 });
+const WAVE_TAIL_SECONDS = 1.2;
+export const MAX_WAVE_EVENTS = 6;
+
+/**
+ * A causal pressure packet, sampled after the wave has travelled to a point.
+ * The front is exactly zero ahead of its radius. A short positive kick is
+ * followed by alternating, gentler ripples, so successive shells carry motion
+ * through the liquid instead of accelerating the whole tank at once.
+ * `speed` is measured in world units / simulated second.
+ */
+export function getWavePacket(distance, age, speed = WAVE_DEFAULTS.waveSpeed, damping = WAVE_DEFAULTS.waveDamping) {
+  if (!Number.isFinite(distance) || !Number.isFinite(age) || !Number.isFinite(speed) || speed <= 0) return 0;
+  const r = Math.max(0, distance), localAge = age - r / speed;
+  if (localAge <= 0 || localAge >= WAVE_TAIL_SECONDS) return 0;
+  const rise = localAge / 0.04;
+  const shock = 1.4 * rise * Math.exp(1 - rise);
+  const rippleAge = Math.max(0, localAge - 0.08);
+  const ripples = 0.45 * Math.sin(rippleAge * Math.PI * 13) * Math.exp(-rippleAge * 4.2) * (1 - Math.exp(-rippleAge * 45));
+  const tail = 1 - clamp((localAge - 0.85) / 0.35, 0, 1);
+  const loss = clamp(finite(damping, WAVE_DEFAULTS.waveDamping), 0, 1);
+  return (shock + ripples) * tail * tail * Math.exp(-loss * r * 0.8) / (1 + 0.8 * r + 0.22 * r * r);
+}
+
+/** Pure wave-force query, with an optional reusable output array. */
+export function getWaveForce(position, beat, params = WAVE_DEFAULTS, target = [0, 0, 0]) {
+  target[0] = 0; target[1] = 0; target[2] = 0;
+  if (!beat || !beat.position || !position) return target;
+  const dx = position[0] - beat.position[0], dy = position[1] - beat.position[1], dz = position[2] - beat.position[2];
+  const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  const speed = beat.waveSpeed ?? params.waveSpeed ?? WAVE_DEFAULTS.waveSpeed;
+  const packet = getWavePacket(r, beat.age, speed, beat.waveDamping ?? params.waveDamping ?? WAVE_DEFAULTS.waveDamping);
+  if (packet === 0) return target;
+  const strength = clamp(finite(params.waveStrength, WAVE_DEFAULTS.waveStrength), 0, 1);
+  if (strength === 0) return target;
+  const force = packet * clamp(finite(beat.strength, 1), 0, 1.5) * strength * 52;
+  // Soft core avoids a directional singularity at the source itself.
+  const invRadius = 1 / Math.sqrt(r * r + 0.0036);
+  if (beat.mode === 'vortex') {
+    // A travelling torsion packet with a pressure component in all three axes.
+    target[0] = (-dz + dx * 0.25) * invRadius * force * 1.25;
+    target[1] = (dy * 0.25 * invRadius + 0.20) * force * 1.25;
+    target[2] = (dx + dz * 0.25) * invRadius * force * 1.25;
+  } else if (beat.mode === 'levitate') {
+    target[0] = dx * invRadius * force * 0.30;
+    target[1] = (0.95 + dy * invRadius * 0.35) * force;
+    target[2] = dz * invRadius * force * 0.30;
+  } else {
+    target[0] = dx * invRadius * force;
+    target[1] = dy * invRadius * force;
+    target[2] = dz * invRadius * force;
+  }
+  return target;
+}
+
 export class FluidSimulation {
   constructor({ count = 3600, preset = 'cascade' } = {}) {
-    this.params = { gravity: 9.81, viscosity: 0.12, turbulence: 0.2, speed: 1, surfaceTension: 0.3 };
+    this.params = { gravity: 9.81, viscosity: 0.12, turbulence: 0.2, speed: 1, surfaceTension: 0.3, ...WAVE_DEFAULTS };
+    this.wavePoint = [0, 0, 0];
+    this.waveForce = [0, 0, 0];
     this.pointer = { active: false, position: [0, 1.5, 0], force: [0, 0, 0] };
     this.reset({ count, preset });
   }
@@ -139,6 +196,9 @@ export class FluidSimulation {
     this.params.turbulence = clamp(finite(next.turbulence, this.params.turbulence), 0, 1);
     this.params.speed = clamp(finite(next.speed, this.params.speed), 0.05, 2);
     this.params.surfaceTension = clamp(finite(next.surfaceTension, this.params.surfaceTension), 0, 1);
+    this.params.waveSpeed = clamp(finite(next.waveSpeed, this.params.waveSpeed), 0.8, 5);
+    this.params.waveStrength = clamp(finite(next.waveStrength, this.params.waveStrength), 0, 1);
+    this.params.waveDamping = clamp(finite(next.waveDamping, this.params.waveDamping), 0, 1);
   }
 
   setPointer(next = {}) {
@@ -161,15 +221,13 @@ export class FluidSimulation {
         center[axis] = clamp(finite(position[axis], center[axis]), FLUID_BOUNDS.min[axis], FLUID_BOUNDS.max[axis]);
       }
     }
-    // Repeated audio callbacks for one transient must not multiply its impulse.
-    const previous = this.beats[this.beats.length - 1];
-    if (previous && previous.age < 0.035 && previous.mode === style &&
-      previous.position.every((value, axis) => Math.abs(value - center[axis]) < 0.2)) {
-      previous.strength = Math.min(1.5, previous.strength + amount * 0.5);
-      return;
-    }
-    if (this.beats.length >= 6) this.beats.shift();
-    this.beats.push({ strength: amount, mode: style, position: center, age: 0 });
+    // Audio scheduling already emits one event per kick. Simulation time may
+    // advance slowly at high detail or in Time Lens, so age cannot identify
+    // duplicate callbacks: two independent kicks must retain separate fronts.
+    if (this.beats.length >= MAX_WAVE_EVENTS) this.beats.shift();
+    const waveSpeed = this.params.waveSpeed;
+    const maxDistance = Math.hypot(...center.map((value, axis) => Math.max(Math.abs(value - FLUID_BOUNDS.min[axis]), Math.abs(value - FLUID_BOUNDS.max[axis]))));
+    this.beats.push({ strength: amount, mode: style, position: center, age: 0, waveSpeed, waveDamping: this.params.waveDamping, lifetime: maxDistance / waveSpeed + WAVE_TAIL_SECONDS });
   }
 
   setAudio(next = {}) {
@@ -323,7 +381,7 @@ export class FluidSimulation {
     const { gravity, turbulence } = this.params;
     const pointer = this.pointer;
     const beats = this.beats;
-    for (const beat of beats) beat.amplitude = beat.strength * Math.exp(-beat.age * 12.5);
+    const wavePoint = this.wavePoint, waveForce = this.waveForce;
     const audio = this.audio;
     audio.age += dt;
     // A missing analyser stream settles back to silence without retaining data.
@@ -362,27 +420,10 @@ export class FluidSimulation {
           az += (pointer.force[2] * 7 - dz * 4) * falloff;
         }
       }
+      wavePoint[0] = x; wavePoint[1] = y; wavePoint[2] = z;
       for (let beatIndex = 0; beatIndex < beats.length; beatIndex++) {
-        const beat = beats[beatIndex];
-        const dx = x - beat.position[0], dy = y - beat.position[1], dz = z - beat.position[2];
-        const radial2 = dx * dx + dz * dz;
-        const radius2 = 1.65 * 1.65;
-        const weight = Math.exp(-radial2 / radius2 - dy * dy / (radius2 * 1.5));
-        const envelope = beat.amplitude * weight;
-        const invRadial = 1 / Math.sqrt(radial2 + 0.035);
-        if (beat.mode === 'vortex') {
-          ax -= dz * invRadial * 34 * envelope;
-          az += dx * invRadial * 34 * envelope;
-          ay += (12 - dy * 4) * envelope;
-        } else if (beat.mode === 'levitate') {
-          ax -= dx * 7 * envelope;
-          az -= dz * 7 * envelope;
-          ay += (55 - dy * 7) * envelope;
-        } else {
-          ax += dx * invRadial * 18 * envelope;
-          az += dz * invRadial * 18 * envelope;
-          ay += (33 - dy * 5) * envelope;
-        }
+        getWaveForce(wavePoint, beats[beatIndex], this.params, waveForce);
+        ax += waveForce[0]; ay += waveForce[1]; az += waveForce[2];
       }
       const drag = Math.max(0, 1 - dt * 0.045);
       v[k] = (v[k] + ax * dt) * drag;
@@ -415,7 +456,7 @@ export class FluidSimulation {
     p.set(q);
     for (let index = beats.length - 1; index >= 0; index--) {
       beats[index].age += dt;
-      if (beats[index].age > 0.48) beats.splice(index, 1);
+      if (beats[index].age > beats[index].lifetime) beats.splice(index, 1);
     }
     this.time += dt;
   }

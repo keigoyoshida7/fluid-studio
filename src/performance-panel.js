@@ -1,3 +1,4 @@
+import { mountWaveControls } from './wave-controls.js';
 import { AudioEngine } from './audio-engine.js';
 import { CameraDirector } from './camera-director.js';
 import './performance.css';
@@ -12,7 +13,7 @@ const PATTERNS = {
 
 const buttonIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg>';
 
-export function mountPerformance({ fluid, getWorker, getPaused, onResume }) {
+export function mountPerformance({ fluid, getWorker, getPaused, getPreset=()=> 'orbit', onResume }) {
   document.querySelector('.presets-section').insertAdjacentHTML('beforebegin', `
     <section class="performance-panel" aria-label="音と流体のパフォーマンス">
       <div class="performance-heading"><div><div class="eyebrow">LIQUID SCORE / SOUND × MATTER</div><h2>流れを、演奏する。</h2><p>低音が水を動かし、光が余韻を描く。</p></div><div class="audio-transport"><span id="audio-status" class="audio-status">SOUND OFF</span><button id="audio-run" class="audio-run" aria-label="音を再生">${buttonIcon}<span>音をはじめる</span></button></div></div>
@@ -22,7 +23,7 @@ export function mountPerformance({ fluid, getWorker, getPaused, onResume }) {
       <div class="performance-settings">
         <div class="tempo-control"><label for="bpm">TEMPO</label><div><input id="bpm" type="number" min="40" max="200" step="1" value="120" inputmode="numeric" aria-label="テンポ BPM" /><span>BPM</span><button id="tap-tempo" title="数回タップしてテンポを指定">TAP</button></div></div>
         <div class="performance-knob"><label for="swing">スウィング <output id="swing-output">0%</output></label><input id="swing" type="range" min="0" max="0.45" step="0.01" value="0" /></div>
-        <div class="performance-knob"><label for="reactivity">水への強さ <output id="reactivity-output">65%</output></label><input id="reactivity" type="range" min="0" max="1" step="0.01" value="0.65" /></div>
+        <div class="performance-knob"><label for="reactivity">水への強さ <output id="reactivity-output">78%</output></label><input id="reactivity" type="range" min="0" max="1" step="0.01" value="0.78" /></div>
         <div class="performance-knob"><label for="audio-volume">音量 <output id="audio-volume-output">35%</output></label><input id="audio-volume" type="range" min="0" max="1" step="0.01" value="0.35" /></div>
         <button id="manual-kick" class="manual-kick">●<span>Kick</span><small>K</small></button>
       </div>
@@ -43,7 +44,7 @@ export function mountPerformance({ fluid, getWorker, getPaused, onResume }) {
   document.querySelector('.view-actions').insertAdjacentHTML('afterbegin','<button id="camera-quick" class="camera-quick" aria-label="カメラの自動移動" aria-pressed="false">CAMERA <span>OFF</span></button>');
 
   const $ = selector => document.querySelector(selector);
-  let reaction='pulse', reactivity=.65, pulse=0, audio, disposed=false, lastUpdate=0, lastAudioForce=0, currentStep=-1, sourceRequest=0, timeLens=false, lightEcho=true;
+  let reaction='pulse', reactivity=.78, pulse=0, audio, disposed=false, lastUpdate=0, lastAudioForce=0, currentStep=-1, sourceRequest=0, timeLens=false, lightEcho=true;
   const optics={smoothness:.78, clarity:.96, dispersion:.08};
   const camera=new CameraDirector(fluid.camera,fluid.controls);
   let cameraEnabled=false, latestSnapshot=null;
@@ -68,12 +69,20 @@ export function mountPerformance({ fluid, getWorker, getPaused, onResume }) {
     if(!running){currentStep=-1;document.querySelectorAll('[data-step]').forEach(button=>button.classList.remove('playing'));}
     paintSteps();
   };
+  const waveControls=mountWaveControls({fluid,getWorker,getPreset});
+  const launchWave=(velocity=1)=>{
+    const strength=Math.min(1.5,Math.max(0,velocity)*reactivity*1.5);
+    if(getPaused()||strength===0)return;
+    const source=waveControls.getSource(currentStep);
+    fluid.triggerWave?.({strength,mode:reaction,source});
+    if(fluid.flowMode!=='vascular')getWorker()?.postMessage({type:'beat',strength,mode:reaction,position:source});
+  };
   audio=new AudioEngine({
     onStep:({step})=>{currentStep=step;$('#bar-position').textContent=`${String(step+1).padStart(2,'0')} / 16`;document.querySelectorAll('[data-step]').forEach((button,i)=>button.classList.toggle('playing',i===step));},
     onBeat:({velocity=1})=>{
       pulse=Math.min(1.5,Math.max(pulse,velocity));
       $('#manual-kick').classList.add('hit');clearTimeout(manualFlash);manualFlash=setTimeout(()=>$('#manual-kick').classList.remove('hit'),110);
-      if(!getPaused()&&fluid.flowMode!=='vascular')getWorker()?.postMessage({type:'beat',strength:Math.min(1.5,velocity*reactivity*1.5),mode:reaction});
+      launchWave(velocity);
     },onState:paintState,
   });
   let manualFlash;
@@ -117,11 +126,12 @@ export function mountPerformance({ fluid, getWorker, getPaused, onResume }) {
 
   return {
     audio,camera,
-    pulseVisual(strength=1){pulse=Math.max(0,Math.min(1.5,Number(strength)||0));},
+    pulseVisual(strength=1){pulse=Math.max(0,Math.min(1.5,Number(strength)||0));if(pulse>0)launchWave(pulse);else waveControls.reset();},
+    resetWaves(){pulse=0;waveControls.reset();},
     update(now){
       if(disposed)return;
       const dt=lastUpdate?Math.min(.1,(now-lastUpdate)/1000):1/60;lastUpdate=now;
-      const bands=audio.update(now);
+      const bands=audio.update(now);fluid.setAudioBands?.(bands);
       pulse*=Math.exp(-dt*4.9);
       const echo=lightEcho?Math.min(1,pulse*.65+(bands.high||0)*.25+(bands.energy||0)*.12):0;
       fluid.setVesselPulse?.(pulse);fluid.setTimeScale?.(timeLens?1-Math.min(.83,pulse*.83):1);fluid.setLightPulse?.(echo);camera.setAudioEnergy?.(Math.min(1,(bands.low||0)*.6+pulse*.35));camera.update(now);
@@ -131,6 +141,6 @@ export function mountPerformance({ fluid, getWorker, getPaused, onResume }) {
       if(audio.mode!=='sequencer')document.querySelectorAll('.audio-visual i').forEach((bar,i)=>{const band=i<10?bands.low:i<22?bands.mid:bands.high;bar.style.transform=`scaleY(${.08+Math.min(1,(band||0)*1.5)*(.55+.45*Math.sin(now*.003+i*.5)**2)})`;});
     },
     getSpeedScale(){return timeLens?1-Math.min(.83,pulse*.83):1;},
-    dispose(){disposed=true;removeLanguageListener();sourceRequest++;clearTimeout(manualFlash);clearTimeout(showMessage.timer);audio.dispose();camera.dispose();document.removeEventListener('keydown',keyHandler);fluid.renderer.domElement.removeEventListener('pointerdown',manualCamera,true);},
+    dispose(){disposed=true;waveControls.dispose();removeLanguageListener();sourceRequest++;clearTimeout(manualFlash);clearTimeout(showMessage.timer);audio.dispose();camera.dispose();document.removeEventListener('keydown',keyHandler);fluid.renderer.domElement.removeEventListener('pointerdown',manualCamera,true);},
   };
 }

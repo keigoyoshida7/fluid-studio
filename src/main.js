@@ -39,13 +39,12 @@ const state = {flowMode:'liquid',preset:'orbit', material:'water', environment:'
 
 document.querySelector('#app').innerHTML = `
   <header class="header">
-    <a class="brand" href="./" aria-label="FLUID ホーム"><span class="brand-symbol">${svg('drop')}</span><span>FLUID<span class="brand-dot">3D</span></span><span class="brand-divider"></span><span class="brand-sub">A study of motion</span></a>
+    <a class="brand" href="./" aria-label="ホーム"><span class="brand-symbol">${svg('drop')}</span></a>
     <div class="header-right"><span class="live-status"><i></i> INTERACTIVE 3D</span><a class="source-link" href="https://github.com/keigoyoshida7/fluid-studio" target="_blank" rel="noopener noreferrer">GitHub ${svg('arrow')}</a><button class="icon-button" id="help" aria-label="使い方">${svg('help')}</button></div>
   </header>
   <main class="workspace">
     <section class="stage" id="stage" aria-label="3D流体シミュレーション">
       <div id="viewport" aria-label="ドラッグで水をかき混ぜる3Dビュー"></div>
-      <div class="stage-heading"><div class="eyebrow"><span class="tiny-cross">+</span> REALTIME LIQUID LABORATORY</div><h1>流体を、<br><em>触る。</em></h1><p id="preset-caption">重力を離れ、流れがかたちを結ぶ。</p></div>
       <div class="stage-top-right"><span class="scene-id">SCENE <b id="scene-number">03</b> / 04</span><div class="view-actions"><button class="icon-button" id="snapshot" aria-label="画像を保存" title="画像を保存">${svg('camera')}</button><button class="icon-button" id="fullscreen" aria-label="全画面表示" title="全画面表示">${svg('expand')}</button></div></div>
       <div class="loading" id="loading"><span class="loading-orbit"></span><p>流れを準備しています</p></div>
       <div class="stage-side-label">EXPERIMENT IN THREE DIMENSIONS</div>
@@ -69,7 +68,7 @@ document.querySelector('#app').innerHTML = `
     </aside>
     <section class="presets-section" aria-label="シーンを選ぶ"><div class="presets-intro"><span class="eyebrow">START WITH A FLOW</span><h2>流れのかたち</h2><span class="preset-sub">4つのシーンから、自由に。</span></div><div class="presets">${presets.map(p=>`<button class="preset ${p.id===state.preset?'active':''}" data-preset="${p.id}" aria-pressed="${p.id===state.preset}"><div class="preset-art"><svg viewBox="0 0 80 72" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">${presetArt[p.id]}</svg></div><div class="preset-copy"><span class="preset-index">${p.index}</span><span class="preset-name">${p.name}</span><span class="preset-ja">${p.ja}</span></div><span class="preset-arrow">↗</span></button>`).join('')}</div></section>
   </main>
-  <footer class="footer"><span>FLUID LAB <span class="footer-slash">/</span> VOL. 001</span><span>Simulated in your browser. Shaped by you.</span><button id="about-footer">この実験について ${svg('arrow')}</button></footer>
+  <footer class="footer"><span>Simulated in your browser. Shaped by you.</span><button id="about-footer">この実験について ${svg('arrow')}</button></footer>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <dialog id="help-dialog" aria-labelledby="guide-title"><div class="dialog-head"><span class="eyebrow">A LITTLE GUIDE</span><button class="icon-button" id="close-help" aria-label="閉じる">${svg('close')}</button></div><h2 id="guide-title">流れと、遊ぶ。</h2><p>水面をドラッグして流れをつくり、重力や粘性を変えてみてください。視点を回すと、奥行きのある水のかたちが見えてきます。</p><div class="help-row"><span>ドラッグ</span><span>水をかき混ぜる / 視点を回す</span></div><div class="help-row"><span>スクロール / ピンチ</span><span>拡大・縮小</span></div><div class="help-row"><span><kbd>Space</kbd> / <kbd>R</kbd></span><span>一時停止 / リセット</span></div><div class="help-row"><span><kbd>H</kbd></span><span>このガイドを開く</span></div><div class="help-row"><span><kbd>K</kbd></span><span>キックを鳴らして水を動かす</span></div><p class="technical-note">Position Based Fluids による3D粒子計算から、滑らかな立体の水面を再構成しています。落下・衝突・圧力・粘性をリアルタイムに計算します。CascadeとRainは水を循環させます。研究・映像制作向けのオフラインソルバーとは精度・解像度が異なります。</p><p class="dialog-foot">WebGL 2 対応のブラウザを推奨。動きが重いときは描画品質を「軽量」に。</p><a class="dialog-source" href="https://github.com/keigoyoshida7/fluid-studio" target="_blank" rel="noopener noreferrer">ソースコードを開く ${svg('arrow')}</a></dialog>
 `;
@@ -89,6 +88,7 @@ function updateRange(id) {
 }
 function selectButtons(selector, key, value) { document.querySelectorAll(selector).forEach(button=>{ const active=button.dataset[key]===value; button.classList.toggle('active',active); button.setAttribute('aria-pressed',String(active)); }); }
 function resetSimulation() {
+  performancePanel?.resetWaves?.();fluid?.resetWaves?.();
   if(state.flowMode==='vascular'){fluid?.resetVessel?.();performancePanel?.pulseVisual?.(0);return;}
   if(!worker) return;
   ready=false; pending=true; simulationTime=0; lastStepSent=0; $('#loading').hidden=false;
@@ -104,8 +104,9 @@ const detailInput=$('#particle-detail');
 const previewDetail=()=>{const count=particleCounts[Number(detailInput.value)];$('#particle-detail-value').innerHTML=`${count.toLocaleString()} <small>${t('粒')}</small>`;detailInput.style.setProperty('--fill',`${Number(detailInput.value)/5*100}%`);};
 detailInput.addEventListener('input',previewDetail);detailInput.addEventListener('change',()=>{state.count=particleCounts[Number(detailInput.value)];resetSimulation();});previewDetail();
 document.querySelectorAll('[data-preset]').forEach(button=>button.addEventListener('click',()=>{
+  if(state.flowMode!=='liquid')vascularPanel?.setMode('liquid');
   const preset=presets.find(p=>p.id===button.dataset.preset); state.preset=preset.id; selectButtons('[data-preset]','preset',preset.id);
-  $('#scene-number').textContent=preset.index; $('#preset-caption').textContent=t(preset.caption);
+  $('#scene-number').textContent=preset.index;
   for(const key of ['gravity','viscosity','turbulence']) { $(`#${key}`).value=preset[key]; updateRange(key); }
   setPaused(false); resetSimulation();
 }));
@@ -136,7 +137,6 @@ document.addEventListener('keydown',event=>{if(event.target.matches('input,selec
 function fail(message) { failureMessage=message; $('#loading').hidden=false;$('#loading').innerHTML=`<span class="error-symbol">↗</span><p>${t(message)}</p><button class="error-retry">${t('再読み込み')}</button>`;$('#loading .error-retry').addEventListener('click',()=>location.reload());$('#simulation-status').textContent=t('起動できませんでした'); }
 mountLanguageSwitch();
 onLanguageChange(()=>{
-  $('#preset-caption').textContent=t(presets.find(p=>p.id===state.preset).caption);
   $('#material-note').textContent=t(materialNotes[state.material]);
   setPaused(state.paused);setMode(state.mode);previewDetail();
   if($('#toast').classList.contains('visible'))$('#toast').textContent=t($('#toast').dataset.i18nMessage||toastSource);
@@ -149,14 +149,14 @@ try {
   worker=new Worker(new URL('./physics-worker.js',import.meta.url),{type:'module'});
   worker.onmessage=({data})=>{
     if(data.type==='ready') {ready=true;pending=true;$('#particle-count').textContent=Number(data.count).toLocaleString('en-US');if(data.renderRadius)fluid.setParticleRadius(data.renderRadius);}
-    if(data.type==='frame') {stepDuration=data.stepMs ?? 0;pending=false;ready=true;receivedFrames++;simulationTime=data.simTime ?? simulationTime;fluid.setParticles(data.positions,data.count);if(data.renderRadius)fluid.setParticleRadius(data.renderRadius);$('#loading').hidden=true;}
+    if(data.type==='frame') {fluid.setSimulationTime?.(data.simTime);stepDuration=data.stepMs ?? 0;pending=false;ready=true;receivedFrames++;simulationTime=data.simTime ?? simulationTime;fluid.setParticles(data.positions,data.count);if(data.renderRadius)fluid.setParticleRadius(data.renderRadius);$('#loading').hidden=true;}
     if(data.type==='error'){pending=false;fail(data.message||'流体計算を開始できませんでした');}
   };
   worker.onerror=()=>{pending=false;fail('流体計算を開始できませんでした。再読み込みしてください。');};
   worker.postMessage({type:'init',count:state.count,preset:state.preset});
   worker.postMessage({type:'params',gravity:state.gravity,viscosity:state.viscosity,turbulence:state.turbulence,speed:state.speed});
-  performancePanel=mountPerformance({fluid,getWorker:()=>worker,getPaused:()=>state.paused,onResume:()=>setPaused(false)});
-  vascularPanel=mountVascular({fluid,onMode:mode=>{state.flowMode=mode;lastStepSent=0;worker.postMessage({type:'clear-effects'});setPaused(false);setMode(mode==='vascular'?'orbit':'stir');if(mode==='liquid')$('#preset-caption').textContent=t(presets.find(p=>p.id===state.preset).caption);}});
+  performancePanel=mountPerformance({fluid,getWorker:()=>worker,getPaused:()=>state.paused,getPreset:()=>state.preset,onResume:()=>setPaused(false)});
+  vascularPanel=mountVascular({fluid,onMode:mode=>{state.flowMode=mode;lastStepSent=0;worker.postMessage({type:'clear-effects'});performancePanel?.resetWaves?.();setPaused(false);setMode(mode==='vascular'?'orbit':'stir');}});
   let lastTime=performance.now();
   function animate(now) {
     requestAnimationFrame(animate);

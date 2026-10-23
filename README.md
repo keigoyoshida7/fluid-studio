@@ -1,4 +1,4 @@
-# FLUID — A study of motion
+# Motion study
 
 A browser-based 3D liquid instrument. Shape transparent water, play a kick sequence, and move through the sculpture with a continuously morphing camera.
 
@@ -28,11 +28,17 @@ Water, Chrome, Amber, and Ink are joined by four experimental optics:
 
 Adjust surface smoothness, clarity, and dispersion independently.
 
-## Vasodilation / fast vessel study
+## Filament network / Vasodilation
 
-The Flow model selector switches to an artistic vasodilation scene: smooth branching translucent vessels with 22,000 internal flow tracers. **Vessel dilation** slowly changes their baseline width; musical kicks add a separate travelling pulse. **Flow speed** controls advection. The GPU animates the vessel and tracers while the PBF solver and liquid reconstruction are suspended, so this mode remains light.
+The initial view is a dense, spatially woven filament network with deliberate voids: 780 connected junctions and up to 12,480 fine threads. The Vasodilation selector keeps its original name while the scene develops into an abstract network study. Free liquid remains available in the same model selector.
 
-The motion uses a kinematic tube model with an idealized parabolic velocity profile. It is a visual study, not a blood-cell simulation, physiological predictor, or clinical flow calculation. Baseline dilation and heartbeat distension are separate controls/processes. Relevant original work: [Furchgott & Zawadzki (1980)](https://pubmed.ncbi.nlm.nih.gov/6253831/) on endothelial-dependent smooth muscle relaxation, and [Hoeks et al. (1985)](https://pubmed.ncbi.nlm.nih.gov/3892817/) on arterial diameter changes through the cardiac cycle.
+Kicks launch localized tension and light packets that travel along the graph and branch at junctions. Their delay follows graph distance, so distant threads respond later. Density, tension, spatial spread, quiet autonomous activity, and Silver / Crimson / Graphite / Follow material palettes can be adjusted. Low frequencies launch the packets; higher frequencies affect microscopic vibration. The GPU draws antialiased ribbons at subpixel widths while the liquid workers are idle. This is an artistic network, not a biological or physiological simulation.
+
+## Sound as a traveling wave
+
+The propagation controls choose speed, afterglow, and a left, central, or moving excitation point. In free liquid, the kick applies a finite-speed pressure wave to the actual fluid particles. Refraction and reflection ripples use the same origin, propagation speed, and simulation clock, so the visible front follows the physical response even when the solver slows down. Pulse, Vortex, and Levitate apply different directional forces. In the network, packets travel along connected filaments and the projected floor wave shares the same excitation point.
+
+Both paths keep a bounded event pool. Free liquid retains the six newest physical and optical packets together; dense sequences replace older packets. The network retains twelve packets. Resetting or switching the model clears pending packets to avoid stale shocks. No title or logo lettering overlays the 3D view; the interface remains monochrome and bilingual.
 
 ## Particle and surface detail
 
@@ -63,7 +69,7 @@ Use Node.js 20.19+ or 22.12+ and a recent WebGL 2 browser.
 ```sh
 npm ci
 npm run dev
-npm test          # physics, audio clock/lifecycle, camera/beat motion, surface geometry
+npm test          # physics, audio lifecycle, motion, surface, causal waves, connected network
 npm run test:detail # optional 12k/32k numerical checks and timings
 npm run build    # static production bundle in docs/
 npm run preview

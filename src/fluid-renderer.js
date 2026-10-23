@@ -2,6 +2,34 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { VesselFlow } from './vessel-flow.js';
+import { MAX_WAVE_EVENTS } from './physics-core.js';
+
+const MAX_WAVES = MAX_WAVE_EVENTS;
+// One bounded event pool is shared by the water's optics and its projected light.
+// Events capture speed and damping at birth so changing a control never teleports a wave.
+const WAVE_UNIFORMS = /* glsl */ `
+  uniform float uWaveTime;
+  uniform vec4 uWaveOrigin[${MAX_WAVES}];
+  uniform vec4 uWaveData[${MAX_WAVES}];
+  float wavePacket(float distanceFromSource, float age, vec4 eventData) {
+    float tau = age - distanceFromSource / max(0.1, eventData.y);
+    if (tau < 0.0 || tau > 1.2 || age > 8.0) return 0.0;
+    float primary = 1.4 * (tau / 0.04) * exp(1.0 - tau / 0.04);
+    float tailTime = max(0.0, tau - 0.08);
+    float trailing = 0.45 * sin(tailTime * 40.8407045) * exp(-tailTime * 4.2) * (1.0 - exp(-tailTime * 45.0));
+    float tail = 1.0 - clamp((tau - 0.85) / 0.35, 0.0, 1.0);
+    float attenuation = exp(-eventData.z * distanceFromSource * 0.8) / (1.0 + 0.8 * distanceFromSource + 0.22 * distanceFromSource * distanceFromSource);
+    return (primary + trailing) * tail * tail * eventData.x * attenuation;
+  }
+  float waveField(vec3 point) {
+    float field = 0.0;
+    for (int i = 0; i < ${MAX_WAVES}; i++) {
+      float age = uWaveTime - uWaveOrigin[i].w;
+      if (uWaveData[i].x > 0.0 && age >= 0.0) field += wavePacket(length(point - uWaveOrigin[i].xyz), age, uWaveData[i]);
+    }
+    return clamp(field, -1.5, 2.0);
+  }
+`;
 
 const FLOOR_VERTEX = /* glsl */ `
   varying vec3 vWorld;
@@ -12,6 +40,7 @@ const FLOOR_VERTEX = /* glsl */ `
   }
 `;
 const FLOOR_FRAGMENT = /* glsl */ `
+  ${WAVE_UNIFORMS}
   varying vec3 vWorld;
   uniform sampler2D uShadow;
   uniform vec3 uTint;
@@ -40,6 +69,11 @@ const FLOOR_FRAGMENT = /* glsl */ `
     float b = sin(p.y * 12.4 - sin(p.x * 5.8 - uTime * 0.24));
     float caustic = pow(max(0.0, 1.0 - abs(a + b) * 0.75), 10.0);
     col += vec3(0.022, 0.036, 0.042) * caustic * coverage * (0.35 + uPulse * 0.45);
+    // The narrow travelling caustic reveals propagation without a global flash.
+    float wave = waveField(vec3(p.x, 0.32, p.y));
+    float echo = max(0.0, wave);
+    float boundedStage = 1.0 - smoothstep(3.3, 4.3, length(p));
+    col += vec3(0.09, 0.16, 0.19) * pow(echo, 1.7) * (0.24 + coverage * 0.7) * boundedStage;
     gl_FragColor = vec4(col, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -88,6 +122,14 @@ export class FluidRenderer {
     this.vesselFlowSpeed = 0.55;
     this.vesselPulse = 0;
     this.vesselEpoch = 0;
+    this.networkDensity = 0.76;
+    this.networkTension = 0.45;
+    this.networkAfterglow = 0.6;
+    this.networkAutonomy = 0.3;
+    this.networkPalette = 'silver';
+    this.audioBands = { low: 0, mid: 0, high: 0, energy: 0 };
+    this.waveParams = { speed: 2.4, strength: 0.72, damping: 0.24 };
+    this._waveCursor = 0;
     this.timeScale = 1;
     this.interactionMode = 'stir';
     this.isDragging = false;
@@ -95,6 +137,7 @@ export class FluidRenderer {
     this.capacity = 0;
     this._lastTime = null;
     this._opticalTime = 0;
+    this._simulationTime = 0;
     this._disposed = false;
     this._surfaceBusy = false;
     this._surfaceDirty = false;
@@ -102,6 +145,11 @@ export class FluidRenderer {
     this.optics = { smoothness: 0.7, clarity: 0.92, dispersion: 0.12 };
     this.lightPulse = 0;
     this.liquidUniforms = { uLiquidTime: { value: 0 }, uLiquidAudio: { value: 0 }, uLiquidMode: { value: 0 } };
+    this.waveUniforms = {
+      uWaveTime: { value: 0 },
+      uWaveOrigin: { value: Array.from({ length: MAX_WAVES }, () => new THREE.Vector4(0, 0, 0, -100)) },
+      uWaveData: { value: Array.from({ length: MAX_WAVES }, () => new THREE.Vector4(0, 2.4, 0.24, 0)) },
+    };
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -147,7 +195,7 @@ export class FluidRenderer {
     this.shadowCamera.up.set(0, 0, -1);
     this.shadowCamera.lookAt(0, 0, 0);
     this.floorMaterial = new THREE.ShaderMaterial({
-      uniforms: { uTint: { value: new THREE.Color(0.028, 0.036, 0.043) }, uTime: { value: 0 }, uPulse: { value: 0 }, uShadow: { value: this.shadowTarget.texture } },
+      uniforms: { ...this.waveUniforms, uTint: { value: new THREE.Color(0.028, 0.036, 0.043) }, uTime: { value: 0 }, uPulse: { value: 0 }, uShadow: { value: this.shadowTarget.texture } },
       vertexShader: FLOOR_VERTEX, fragmentShader: FLOOR_FRAGMENT,
     });
     this.floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), this.floorMaterial);
@@ -191,14 +239,16 @@ export class FluidRenderer {
   }
   _installExperimentalOptics() {
     this.surfaceMaterial.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, this.liquidUniforms);
-      shader.vertexShader = 'varying vec3 vLiquidPosition;\n' + shader.vertexShader;
-      shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvLiquidPosition = position;');
+      Object.assign(shader.uniforms, this.liquidUniforms, this.waveUniforms);
+      shader.vertexShader = 'varying vec3 vLiquidPosition;\nvarying vec3 vLiquidWorldPosition;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvLiquidPosition = position;\nvLiquidWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;');
       shader.fragmentShader = `
         varying vec3 vLiquidPosition;
+        varying vec3 vLiquidWorldPosition;
         uniform float uLiquidTime;
         uniform float uLiquidAudio;
         uniform float uLiquidMode;
+        ${WAVE_UNIFORMS}
       ` + shader.fragmentShader;
       shader.fragmentShader = shader.fragmentShader.replace('vec4 diffuseColor = vec4( diffuse, opacity );', `
         vec4 diffuseColor = vec4(diffuse, opacity);
@@ -206,10 +256,24 @@ export class FluidRenderer {
         float lt = uLiquidTime;
         float liquidFlow = lp.x * 2.4 + lp.y * 2.1 + sin(lp.z * 3.0 + lt * 0.2) - lt * 0.24;
         float liquidPhase = smoothstep(-0.32, 0.32, sin(liquidFlow));
+        float liquidWave = waveField(vLiquidWorldPosition);
+      `);
+      shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', `
+        #include <normal_fragment_maps>
+        // A shallow, causal ripple bends reflection/refraction. Bulk displacement
+        // remains the responsibility of the fluid solver rather than a shader wobble.
+        vec3 waveSigmaX = dFdx(-vViewPosition);
+        vec3 waveSigmaY = dFdy(-vViewPosition);
+        vec3 waveR1 = cross(waveSigmaY, normal);
+        vec3 waveR2 = cross(normal, waveSigmaX);
+        float waveDet = dot(waveSigmaX, waveR1) * faceDirection;
+        vec3 waveGradient = sign(waveDet) * (dFdx(liquidWave) * waveR1 + dFdy(liquidWave) * waveR2);
+        normal = normalize(abs(waveDet) * normal - waveGradient * 0.009);
       `);
       shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', `
         #include <roughnessmap_fragment>
         if (uLiquidMode > 3.5) roughnessFactor = mix(0.035, 0.095, liquidPhase);
+        roughnessFactor = max(0.016, roughnessFactor * (1.0 - max(0.0, liquidWave) * 0.16));
       `);
       shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>', `
         #include <metalnessmap_fragment>
@@ -245,7 +309,7 @@ export class FluidRenderer {
       const transmission = THREE.ShaderChunk.transmission_fragment.replace('material.transmission = transmission;', 'material.transmission = transmission;\nif (uLiquidMode > 3.5) material.transmission *= (1.0 - liquidPhase);');
       shader.fragmentShader = shader.fragmentShader.replace('#include <transmission_fragment>', transmission);
     };
-    this.surfaceMaterial.customProgramCacheKey = () => 'liquid-optics-v2';
+    this.surfaceMaterial.customProgramCacheKey = () => 'liquid-optics-v3-wavefronts';
   }
   _buildBoundary() {
     const points = [], x = 1.77, z = 1.37, y = -0.01;
@@ -402,11 +466,19 @@ export class FluidRenderer {
       this.vesselFlow = new VesselFlow({ material: this.surfaceMaterial });
       this.vesselFlow.setDilation(this.vesselDilation);
       this.vesselFlow.setFlow(this.vesselFlowSpeed);
+      this.vesselFlow.setDensity?.(this.networkDensity);
+      this.vesselFlow.setTension?.(this.networkTension);
+      this.vesselFlow.setAfterglow?.(this.networkAfterglow);
+      this.vesselFlow.setAutonomy?.(this.networkAutonomy);
+      this.vesselFlow.setPalette?.(this.networkPalette);
+      this.vesselFlow.setWaveParams?.(this.waveParams);
+      this.vesselFlow.setBands?.(this.audioBands);
       this.baseScene.add(this.vesselFlow);
     }
     this.flowMode = vascular ? 'vascular' : 'liquid';
     this.surface.visible = !vascular;
     this.vesselFlow?.setEnabled(vascular);
+    if (changed) this.resetWaves();
     if (vascular && changed) this.resetVessel();
     if (!vascular) this._surfaceDirty = true;
     if (this.isDragging) this._onUp();
@@ -423,9 +495,68 @@ export class FluidRenderer {
     this.vesselPulse = THREE.MathUtils.clamp(Number(value) || 0, 0, 2);
     this.vesselFlow?.setPulse(this.vesselPulse);
   }
+  setNetworkDensity(value) {
+    this.networkDensity = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.vesselFlow?.setDensity?.(this.networkDensity);
+  }
+  setNetworkTension(value) {
+    this.networkTension = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.vesselFlow?.setTension?.(this.networkTension);
+  }
+  setNetworkAfterglow(value) {
+    this.networkAfterglow = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.vesselFlow?.setAfterglow?.(this.networkAfterglow);
+  }
+  setNetworkAutonomy(value) {
+    this.networkAutonomy = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.vesselFlow?.setAutonomy?.(this.networkAutonomy);
+  }
+  setNetworkPalette(name) {
+    this.networkPalette = ['silver', 'crimson', 'graphite', 'material'].includes(name) ? name : 'silver';
+    this.vesselFlow?.setPalette?.(this.networkPalette);
+  }
+  setAudioBands(bands = {}) {
+    for (const key of ['low', 'mid', 'high', 'energy']) {
+      this.audioBands[key] = THREE.MathUtils.clamp(Number(bands[key]) || 0, 0, 2);
+    }
+    this.vesselFlow?.setBands?.(this.audioBands);
+  }
+  setWaveParams(next = {}) {
+    if (Number.isFinite(Number(next.speed))) this.waveParams.speed = THREE.MathUtils.clamp(Number(next.speed), 0.8, 5);
+    if (Number.isFinite(Number(next.strength))) this.waveParams.strength = THREE.MathUtils.clamp(Number(next.strength), 0, 1);
+    if (Number.isFinite(Number(next.damping))) this.waveParams.damping = THREE.MathUtils.clamp(Number(next.damping), 0, 1);
+    else if (Number.isFinite(Number(next.afterglow))) this.waveParams.damping = 1 - THREE.MathUtils.clamp(Number(next.afterglow), 0, 1);
+    this.vesselFlow?.setWaveParams?.(this.waveParams);
+  }
+  setSimulationTime(value) {
+    const next = Number(value);
+    if (!Number.isFinite(next) || next < 0) return;
+    if (next < this._simulationTime - 0.001 && this.flowMode !== 'vascular') this.resetWaves();
+    this._simulationTime = next;
+  }
+  triggerWave({ strength = 1, mode = 'pulse', source } = {}) {
+    const level = THREE.MathUtils.clamp(Number(strength) || 0, 0, 2);
+    if (level <= 0) return null;
+    // setVesselPulse is only an amplitude envelope. Packets are born here, once
+    // per scheduled beat or explicit gesture, including when the envelope stays high.
+    const packet = this.flowMode === 'vascular' ? this.vesselFlow?.excite?.({ strength: level, mode, source }) : null;
+    const point = packet?.origin || (Array.isArray(source) || ArrayBuffer.isView(source) ? source : source?.isVector3 ? source.toArray() : [0, 0.32, 0]);
+    const origin = [Number(point[0]) || 0, Number(point[1]) || 0, Number(point[2]) || 0];
+    const birth = this.flowMode === 'vascular' ? this._opticalTime : this._simulationTime;
+    const index = this._waveCursor;
+    this._waveCursor = (index + 1) % MAX_WAVES;
+    this.waveUniforms.uWaveOrigin.value[index].set(...origin, birth);
+    this.waveUniforms.uWaveData.value[index].set(level * this.waveParams.strength, this.waveParams.speed, this.waveParams.damping, mode === 'vortex' ? 1 : mode === 'levitate' ? 2 : 0);
+    return { origin, time: birth, strength: level, mode };
+  }
+  resetWaves() {
+    this._waveCursor = 0;
+    for (const data of this.waveUniforms.uWaveData.value) data.x = 0;
+  }
   resetVessel() {
     this.vesselEpoch = this._opticalTime;
     this.vesselPulse = 0;
+    this.resetWaves();
     this.vesselFlow?.reset?.();
   }
   setTimeScale(value = 1) {
@@ -471,13 +602,19 @@ export class FluidRenderer {
     const dpr = Math.min(window.devicePixelRatio || 1, this.quality === 'ultra' ? 2 : this.quality === 'fast' ? 1 : 1.5);
     this.renderer.setPixelRatio(dpr); this.renderer.setSize(width, height, false);
     this.renderer.transmissionResolutionScale = this.quality === 'fast' ? 0.65 : this.quality === 'balanced' ? 0.85 : 1;
-    this.camera.aspect = width / height; this.camera.updateProjectionMatrix();
+    const aspect = width / height;
+    // Preserve horizontal framing when the view becomes portrait, including
+    // while the camera director is off and OrbitControls holds the pose.
+    const oldFrame = Math.min(1, this.camera.aspect), newFrame = Math.min(1, aspect);
+    this.camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * oldFrame / newFrame));
+    this.camera.aspect = aspect; this.camera.updateProjectionMatrix();
   }
   render(time = performance.now()) {
     if (this._disposed) return;
     const delta = this._lastTime === null ? 1 / 60 : Math.min((time - this._lastTime) / 1000, 0.1);
     this._lastTime = time; this.controls.update(delta); this._scheduleSurface(time);
     if (!this.paused) this._opticalTime += delta * this.timeScale;
+    this.waveUniforms.uWaveTime.value = this.flowMode === 'vascular' ? this._opticalTime : this._simulationTime;
     this.floorMaterial.uniforms.uTime.value = this._opticalTime;
     this.floorMaterial.uniforms.uPulse.value = this.lightPulse;
     this.liquidUniforms.uLiquidTime.value = this._opticalTime;
