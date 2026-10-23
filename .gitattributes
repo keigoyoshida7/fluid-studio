@@ -1,0 +1,2 @@
+# Built bundles include third-party shader strings; review source instead.
+docs/assets/* linguist-generated=true -whitespace
